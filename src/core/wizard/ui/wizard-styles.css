@@ -1,0 +1,96 @@
+body {
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  margin: 0;
+  padding: 20px;
+  background: #000000;
+  color: #00ff00;
+  height: 100vh;
+  overflow: hidden;
+}
+.container {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 20px;
+  height: calc(100vh - 40px);
+}
+.panel {
+  background: #2a2a2a;
+  border: 1px solid #00ff00;
+  border-radius: 4px;
+  padding: 15px;
+  overflow-y: auto;
+}
+.panel h3 {
+  margin-top: 0;
+  border-bottom: 1px solid #00ff00;
+  padding-bottom: 5px;
+}
+.controls {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  gap: 10px;
+}
+button {
+  background: #00ff00;
+  color: #000;
+  border: none;
+  padding: 10px 15px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: bold;
+}
+button:hover {
+  background: #00cc00;
+}
+.code {
+  background: #1a1a1a;
+  padding: 10px;
+  border-radius: 4px;
+  margin: 5px 0;
+  white-space: pre-wrap;
+  font-size: 12px;
+  border: 1px solid #444;
+}
+.status {
+  padding: 5px;
+  margin: 5px 0;
+  border-radius: 4px;
+}
+.status.pending { background: #333; color: #ccc; }
+.status.current { background: #444400; color: #ffff00; }
+.status.completed { background: #004400; color: #00ff00; }
+.step-item {
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid #444;
+  border-radius: 4px;
+}
+.form-group {
+  margin: 10px 0;
+}
+.form-group label {
+  display: block;
+  margin-bottom: 5px;
+  font-weight: bold;
+}
+.form-group input, .form-group textarea, .form-group select {
+  width: 100%;
+  background: #1a1a1a;
+  border: 1px solid #00ff00;
+  color: #00ff00;
+  padding: 5px;
+  border-radius: 4px;
+}
+.form-group textarea {
+  min-height: 100px;
+  font-family: inherit;
+}
+.step-controls {
+  margin-top: 20px;
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
