@@ -1,5 +1,5 @@
 {
-  "name": "@swizzy/kit",
+  "name": "@swizzy_ai/kit",
   "version": "1.0.0",
   "description": "A TypeScript library for building wizard-like workflows with LLM integration",
   "main": "dist/index.js",
@@ -16,8 +16,16 @@
     "workflow",
     "typescript"
   ],
-  "author": "",
+  "author": "Olufemi Oluwatobi <tobilobaolufemi001@gmail.com>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/swizzy-ai/swizzy-kit.git"
+  },
+  "homepage": "https://github.com/swizzy-ai/swizzy-kit#readme",
+  "bugs": {
+    "url": "https://github.com/swizzy-ai/swizzy-kit/issues"
+  },
   "dependencies": {
     "@ai-sdk/anthropic": "^1.0.0",
     "@ai-sdk/google": "^1.0.0",

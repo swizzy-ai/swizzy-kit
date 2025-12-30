@@ -32,7 +32,7 @@ export class SwizzyProvider extends BaseProvider {
   }
 
   async complete(options: CompletionOptions): Promise<CompletionResult> {
-    const endpoint = options.stream ? '/completions/stream' : '/completions';
+    const endpoint = '/completions';
     const response = await fetch(`${this.config.baseURL}${endpoint}`, {
       method: 'POST',
       headers: {
@@ -43,6 +43,7 @@ export class SwizzyProvider extends BaseProvider {
         prompt: options.prompt,
         max_tokens: options.maxTokens || 1000,
         temperature: options.temperature || 0.7,
+        stream: options.stream || false,
       }),
     });
     if (!response.ok) {
@@ -60,12 +61,41 @@ export class SwizzyProvider extends BaseProvider {
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No response body for streaming');
       let fullText = '';
+      let buffer = '';
       const decoder = new TextDecoder();
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value);
-        fullText += chunk;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+        for (const event of events) {
+          if (event.startsWith('data: ')) {
+            const data = event.slice(6);
+            if (data === '[DONE]') {
+              continue;
+            }
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.response !== undefined) {
+                if (options.onChunk) {
+                  options.onChunk(parsed.response);
+                }
+                fullText += parsed.response;
+              }
+              if (parsed.usage && options.onUsage) {
+                const usage = {
+                  promptTokens: parsed.usage.prompt_tokens || 0,
+                  completionTokens: parsed.usage.completion_tokens || 0,
+                  totalTokens: parsed.usage.total_tokens || 0,
+                };
+                options.onUsage(usage, this.getProviderName());
+              }
+            } catch (e) {
+              console.error('Failed to parse SSE data:', data, e);
+            }
+          }
+        }
       }
       return { text: fullText };
     } else {

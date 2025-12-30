@@ -13,6 +13,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@swizzy_ai/kit": "^1.0.0",
     "@swizzy/kit": "file:..",
     "dotenv": "^17.2.3"
   }

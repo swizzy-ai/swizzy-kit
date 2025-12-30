@@ -2,273 +2,116 @@
 
 <div align="center">
 
-<h1 style="font-size:2.5em; font-weight:bold; margin:1em 0;">
-  <img
-    src="https://img.shields.io/badge/Wizard-Framework-blue?style=for-the-badge&logo=magic&logoColor=white"
-    alt="Wizard Framework"
-    style="border-radius: 10px;"
-  />
-</h1>
+**A Framework for Designing LLM Experiences**
 
-**Type-Safe AI Workflow Framework**
-
-[![npm version](https://img.shields.io/badge/npm-1.0.0-blue.svg?style=flat&logo=npm)](https://www.npmjs.com/package/@swizzy/kit)
+[![npm version](https://img.shields.io/badge/npm-1.0.0-blue.svg)](https://www.npmjs.com/package/@swizzy_ai/kit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 
-[![GitHub stars](https://img.shields.io/github/stars/yourusername/wizard-framework?style=social)](https://github.com/yourusername/wizard-framework/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/yourusername/wizard-framework?style=social)](https://github.com/yourusername/wizard-framework/network/members)
-[![GitHub watchers](https://img.shields.io/github/watchers/yourusername/wizard-framework?style=social)](https://github.com/yourusername/wizard-framework/watchers)
-
-⭐ If you find Wizard Framework useful, please give it a star. It helps the community grow!
-
-*Structured Control • Type Safety First • Full Observability*
+[Install](#installation) • [Documentation](https://docs.wizard.dev) • [Examples](#examples)
 
 </div>
 
 ---
 
-## Project Status[![](./docs/img/pin.svg)](#project-status)
+## Why Wizard Exists
 
-<table>
-  <tr>
-    <td><img src="https://img.shields.io/badge/Build-Passing-brightgreen.svg?style=flat&logo=github-actions&logoColor=white" alt="Build Status"/></td>
-    <td><img src="https://img.shields.io/badge/Tests-Passing-brightgreen.svg?style=flat&logo=jest&logoColor=white" alt="Test Status"/></td>
-    <td><img src="https://img.shields.io/badge/Coverage-95%25-brightgreen.svg?style=flat&logo=codecov&logoColor=white" alt="Coverage"/></td>
-  </tr>
-  <tr>
-    <td><img src="https://img.shields.io/badge/Solution-TypeScript-blue.svg?style=flat&logo=typescript&logoColor=white&labelColor=363D44" alt="TypeScript solution"/></td>
-    <td><img src="https://img.shields.io/badge/Runtime-Node.js-blue?style=flat&logo=node.js&logoColor=white&labelColor=363D44" alt="Node.js runtime"/></td>
-    <td><img src="https://img.shields.io/badge/AI-LLM%20Integration-blue?style=flat&logo=openai&logoColor=white&labelColor=363D44" alt="AI Integration"/></td>
-  </tr>
-</table>
+### The Current State is Broken
 
----
+Today's LLM orchestration assumes the **LLM itself is the agent** - an intelligent entity you hand tools to and hope it figures things out. This paradigm works brilliantly in controlled environments (see: Claude Code's success), but fails catastrophically when:
 
-## Table of Contents[![](./docs/img/pin.svg)](#table-of-contents)
+- The environment isn't perfectly curated
+- Mistakes or hallucinations have real costs
+- Context limits constrain what the model can see
+- Each turn summons a "new spirit" with no memory of the last
 
-- [What is a Wizard?](#what-is-a-wizard)
-- [The 3 Core Pillars](#the-3-core-pillars)
-- [Installation](#installation)
-- [Core Components](#core-components)
-- [Feature Spotlight: Bungee Jumps](#feature-spotlight-bungee-jumps)
-- [Developer Experience](#developer-experience)
-- [API Reference](#api-reference)
-- [Examples](#examples)
-- [Contributing](#contributing)
-- [License](#license)
-- [Call to Action](#call-to-action)
+The mental model is fundamentally flawed.
 
-> [!IMPORTANT]
-> Full technical guidance for building, using, and integrating Wizard Framework is available in the [documentation](./docs/ "Wizard Framework documentation").
+### What Wizard Believes
 
----
+**Real agency and intelligence are emergent products of process and design.**
 
-## What is a Wizard?[![](./docs/img/pin.svg)](#what-is-a-wizard)
+Wizard inverts the paradigm: the **developer is the orchestrator**, the **LLM is the user**. You design the experience - what information to present, what to collect, what happens next. The LLM focuses on what it does best: generating the most plausible text for each scenario.
 
-A **Wizard** transforms AI workflows into deterministic state machines. Instead of chaining LLM calls haphazardly, Wizards provide structured control flow, type-safe data handling, and complete observability.
-
-```javascript
-const { Wizard, Models } = require('@swizzy/kit');
-
-const wizard = new Wizard({
-  id: 'my-workflow',
-  onUsage: (usage, provider) => {
-    console.log(`Used ${usage.totalTokens} tokens`);
-  }
-});
-```
-
-### The 3 Core Pillars
-
-#### 🏗️ Structured Control
-Move beyond unstructured chains to finite state machines. Every step has a clear purpose, and flow control is explicit and predictable.
-
-```javascript
-wizard.addTextStep({
-  id: 'analyze_sentiment',
-  instruction: 'Analyze sentiment of: {{text}}',
-  schema: z.object({
-    sentiment: z.enum(['positive', 'negative', 'neutral']),
-    confidence: z.number().min(0).max(1)
-  }),
-  model: Models.SWIZZY_DEFAULT,
-  update: (result, context, actions) => {
-    if (result.confidence < 0.8) {
-      return actions.retry(); // Explicit error handling
-    }
-    return actions.next(); // Clear flow control
-  }
-});
-```
-
-#### 🔒 Type Safety First
-Leverage Zod schemas to ensure LLMs produce usable data structures, not just conversational text. Catch errors at runtime, not in production.
-
-```javascript
-const AnalysisSchema = z.object({
-  topics: z.array(z.string()),
-  sentiment: z.enum(['positive', 'negative', 'neutral']),
-  entities: z.array(z.object({
-    name: z.string(),
-    type: z.enum(['person', 'organization', 'location'])
-  }))
-});
-
-wizard.addTextStep({
-  id: 'analyze_content',
-  instruction: 'Analyze this content: {{content}}',
-  schema: AnalysisSchema,
-  model: Models.SWIZZY_DEFAULT,
-  update: (validatedData, context, actions) => {
-    // validatedData is fully typed - no runtime surprises
-    console.log(validatedData.sentiment); // TypeScript knows this exists
-    return actions.next();
-  }
-});
-```
-
-#### 👁️ Full Observability
-If you can't see your workflow executing in real-time, you can't debug it. Our visualization layer makes every step, token, and decision transparent.
-
-```javascript
-// Start real-time visualization
-const { server, url } = await wizard.visualize(3000);
-console.log(`Open ${url} to watch your workflow execute`);
-
-// Features:
-// - Live step execution tracking
-// - Token usage per step
-// - Context changes in real-time
-// - Interactive pause/resume controls
-```
+This is agentic Lego bricks, not autonomous agents.
 
 ---
 
 ## Installation
 
 ```bash
-npm install @swizzy/kit
-# or
-yarn add @swizzy/kit
-# or
-pnpm add @swizzy/kit
+npm install @swizzy_ai/kit
+```
+
+```javascript
+const { Wizard, Models } = require('@swizzy_ai/kit');
+
+const wizard = new Wizard({ id: 'my-workflow' });
 ```
 
 ---
 
-## Core Components
+## The Framework
 
-### Shared Memory (Context)
+### Steps: The Core Building Block
 
-Context is the persistent data store that all steps can read from and write to. Think of it as a shared JavaScript object that maintains state throughout the workflow.
+A **Step** is where you define:
+1. What to ask the LLM
+2. What piece of context/state to update
+3. What step to execute next
+
+Every step has five components:
+
+---
+
+### 1. Step Variants (The Type)
+
+Choose the right step type for your task:
+
+#### Normal Step (Structured Data)
+Provides an instruction + schema. The LLM generates a structured object matching that schema.
 
 ```javascript
-// Initialize context
-wizard.setContext({
-  userName: 'Alice',
-  documents: ['doc1.pdf', 'doc2.pdf'],
-  currentStep: 0
-});
-
-// Steps can read context
-wizard.addTextStep({
-  id: 'greet_user',
-  instruction: 'Greet {{userName}} and mention they have {{documents.length}} documents',
-  // ...
-});
-
-// Steps can write to context
-wizard.addComputeStep({
-  id: 'process_docs',
+wizard.addStep({
+  id: 'extract_entities',
+  instruction: 'Extract entities from: {{text}}',
+  schema: z.object({
+    people: z.array(z.string()),
+    organizations: z.array(z.string())
+  }),
+  model: Models.SWIZZY_DEFAULT,
   update: (result, context, actions) => {
-    actions.updateContext({
-      processedCount: context.documents.length,
-      status: 'completed'
-    });
+    // result is guaranteed to match schema
+    actions.updateContext({ entities: result });
     return actions.next();
   }
 });
 ```
 
-#### Template Variables
-Use `{{variable}}` syntax for simple value injection:
-
-```javascript
-wizard.addTextStep({
-  id: 'personalize',
-  instruction: 'Hello {{userName}}, you are {{userAge}} years old',
-  // ...
-});
-```
-
-#### Context Functions
-For complex data preparation:
+#### Text Step (Simple Text)
+Collects a single text response. No schema needed.
 
 ```javascript
 wizard.addTextStep({
   id: 'summarize',
-  instruction: 'Summarize these documents: {{docList}}',
-  contextType: 'template',
-  contextFunction: (context) => ({
-    docList: context.documents.map((doc, i) =>
-      `${i + 1}. ${doc.title} (${doc.pages} pages)`
-    ).join('\n')
-  }),
-  // ...
-});
-```
-
-### Steps: The Building Blocks
-
-Steps are the individual units of execution in your workflow. There are three types:
-
-#### 1. TextStep: LLM-Powered Steps
-Generate structured text with schema validation.
-
-```javascript
-wizard.addTextStep({
-  id: 'extract_keywords',
-  instruction: 'Extract key topics from: {{text}}',
-  schema: z.object({
-    keywords: z.array(z.string()),
-    confidence: z.number()
-  }),
+  instruction: 'Summarize: {{document}}',
   model: Models.SWIZZY_DEFAULT,
-  update: (data, context, actions) => {
-    actions.updateContext({ keywords: data.keywords });
+  update: (text, context, actions) => {
+    actions.updateContext({ summary: text });
     return actions.next();
   }
 });
 ```
 
-#### 2. ComputeStep: Logic Steps
-Pure computation without LLM calls.
+#### Compute Step (Non-LLM Logic)
+For calculations, API calls, validation - anything that doesn't need an LLM.
 
 ```javascript
 wizard.addComputeStep({
-  id: 'validate_keywords',
+  id: 'validate',
   update: (result, context, actions) => {
-    const keywords = context.keywords;
-    if (keywords.length < 3) {
-      return actions.goto('extract_keywords'); // Retry extraction
+    if (context.entities.people.length === 0) {
+      return actions.retry(); // No entities found
     }
-    return actions.next();
-  }
-});
-```
-
-#### 3. General Step: Custom Steps
-Maximum flexibility with `addStep()`.
-
-```javascript
-wizard.addStep({
-  id: 'custom_logic',
-  instruction: 'Custom step logic',
-  customHandler: myCustomFunction,
-  update: (data, context, actions) => {
-    // Your custom logic here
     return actions.next();
   }
 });
@@ -276,309 +119,333 @@ wizard.addStep({
 
 ---
 
-## The Architecture (Core Concepts)
+### 2. Context Function (What the LLM Sees)
 
-### The Wizard: Your Orchestrator
-
-The `Wizard` class is the heart of the framework. It manages:
-- **Step Registry**: All your workflow steps
-- **Context Store**: Shared memory across steps
-- **Execution Engine**: Runs steps in the correct order
-- **Flow Control**: Handles branching, retries, and termination
-
-```javascript
-const wizard = new Wizard({
-  id: 'my-workflow',
-  systemPrompt: 'You are a helpful AI assistant.',
-  onUsage: (usage, provider) => {
-    // Track token usage
-    console.log(`${usage.totalTokens} tokens used`);
-  }
-});
-```
-
-### The Context: Shared Memory
-
-Context is the "memory" that persists across all steps. Think of it as a shared JavaScript object that steps can read from and write to.
-
-#### Template Variables
-Use `{{variableName}}` in instructions for simple value replacement:
+The `contextFunction` lets you control exactly what information the LLM receives. It transforms the full context into a focused view.
 
 ```javascript
 wizard.setContext({
-  userName: 'Bob',
-  task: 'write a poem'
+  documents: [
+    { title: 'Q1 Report', pages: 45, data: [...] },
+    { title: 'Q2 Report', pages: 52, data: [...] }
+  ]
 });
 
 wizard.addTextStep({
-  id: 'create_poem',
-  instruction: 'Write a {{task}} about {{userName}}',
-  // ...
-});
-```
-
-#### Context Functions
-For complex data transformations, use `contextFunction`:
-
-```javascript
-wizard.addTextStep({
-  id: 'analyze_data',
-  instruction: 'Analyze this dataset: {{formattedData}}',
-  contextType: 'template',
+  id: 'analyze',
+  instruction: 'Analyze these documents:\n{{formattedDocs}}',
   contextFunction: (context) => ({
-    formattedData: context.rawData.map(item =>
-      `${item.name}: ${item.value}`
-    ).join(', ')
+    // Transform complex data into LLM-friendly format
+    formattedDocs: context.documents
+      .map((doc, i) => `${i + 1}. ${doc.title} (${doc.pages} pages)`)
+      .join('\n')
   }),
-  // ...
-});
-```
-
-### The Steps: Your Building Blocks
-
-Steps are the individual units of work in your workflow. There are three types:
-
-#### 1. TextStep: LLM Interactions
-Generates structured text using LLMs with schema validation.
-
-```javascript
-wizard.addTextStep({
-  id: 'extract_entities',
-  instruction: 'Extract named entities from: {{text}}',
   schema: z.object({
-    people: z.array(z.string()),
-    organizations: z.array(z.string()),
-    locations: z.array(z.string())
+    insights: z.array(z.string())
   }),
   model: Models.SWIZZY_DEFAULT,
-  update: (validatedData, context, actions) => {
-    // validatedData is guaranteed to match the schema
-    actions.updateContext({
-      extractedEntities: validatedData
-    });
-    return actions.next();
-  }
-});
-```
-
-#### 2. ComputeStep: Pure Logic
-For computations, API calls, or any code that doesn't need LLMs.
-
-```javascript
-wizard.addComputeStep({
-  id: 'validate_data',
-  instruction: 'Validate the extracted entities',
   update: (result, context, actions) => {
-    const entities = context.extractedEntities;
-    const isValid = entities.people.length > 0 ||
-                   entities.organizations.length > 0;
-
-    if (!isValid) {
-      console.log('⚠️ No entities found, retrying...');
-      return actions.retry();
-    }
-
-    actions.updateContext({ validationPassed: true });
+    actions.updateContext({ insights: result.insights });
     return actions.next();
   }
 });
 ```
 
-#### 3. General Step: Full Control
-The `addStep()` method accepts any configuration for maximum flexibility.
-
-```javascript
-wizard.addStep({
-  id: 'custom_step',
-  instruction: 'Custom logic here',
-  customProperty: 'value',
-  update: (data, context, actions) => {
-    // Your custom logic
-    return actions.next();
-  }
-});
-```
-
-### Flow Control: The Router
-
-Control execution flow with explicit signals:
-
-```mermaid
-stateDiagram-v2
-    [*] --> Step1
-    Step1 --> Step2: next()
-    Step1 --> Step3: goto('step3')
-    Step1 --> [*]: stop()
-    Step2 --> Step2: retry()
-    Step2 --> Waiting: wait()
-    Waiting --> Step2: 10s timeout
-```
-
-- **`actions.next()`**: Continue to the next step in sequence
-- **`actions.goto('stepId')`**: Jump to any step by ID
-- **`actions.stop()`**: End the workflow immediately
-- **`actions.retry()`**: Retry the current step (with exponential backoff)
-- **`actions.wait()`**: Pause for 10 seconds before continuing
+**Why This Matters**: You design the information architecture. The LLM never sees irrelevant data.
 
 ---
 
-## Feature Spotlight: Bungee Jumps (Parallelism)
+### 3. Instruction (The Prompt Template)
 
-**Bungee Jumps are our secret weapon** - the pattern that makes @swizzy/kit uniquely powerful for AI workflows.
+The instruction is the text shown to the LLM. It's a template engine that processes the context function at runtime, replacing `{{variables}}` with real data.
 
-### The Concept
+```javascript
+wizard.addTextStep({
+  id: 'greet_user',
+  instruction: 'Greet {{userName}} who has {{documentCount}} documents',
+  // At runtime becomes: "Greet Alice who has 5 documents"
+  contextFunction: (context) => ({
+    userName: context.user.name,
+    documentCount: context.user.documents.length
+  }),
+  model: Models.SWIZZY_DEFAULT,
+  update: (text, context, actions) => {
+    console.log(text);
+    return actions.next();
+  }
+});
+```
 
-Traditional AI workflows are sequential: Step 1 → Step 2 → Step 3. But what if Step 2 needs to process 100 documents? You'd wait 100x longer than necessary.
+---
 
-Bungee Jumps implement the **fan-out/fan-in pattern**:
-1. **Anchor**: The main flow pauses at a step
-2. **Jump**: Launch multiple parallel "worker" instances
-3. **Batch**: Each worker processes a different data point
-4. **Return**: All workers complete, main flow resumes
+### 4. Update Function (State Mutation)
+
+After a step runs, the `update` function:
+- Updates context/state with new information
+- Executes control actions (next step, retry, etc.)
+
+```javascript
+wizard.addTextStep({
+  id: 'analyze_sentiment',
+  instruction: 'Analyze sentiment: {{text}}',
+  schema: z.object({
+    sentiment: z.enum(['positive', 'negative', 'neutral']),
+    confidence: z.number()
+  }),
+  model: Models.SWIZZY_DEFAULT,
+  update: (result, context, actions) => {
+    // Update state
+    actions.updateContext({
+      sentiment: result.sentiment,
+      confidence: result.confidence
+    });
+
+    // Control flow
+    if (result.confidence < 0.7) {
+      return actions.retry(); // Low confidence, try again
+    }
+    return actions.next(); // Continue
+  }
+});
+```
+
+---
+
+### 5. Control Actions (Flow Signals)
+
+Actions control which step runs next. This is how you design the agentic experience.
+
+```javascript
+wizard.addComputeStep({
+  id: 'router',
+  update: (result, context, actions) => {
+    // Sequential flow
+    if (context.simple) {
+      return actions.next();
+    }
+
+    // Jump to specific step
+    if (context.needsValidation) {
+      return actions.goto('validate_data');
+    }
+
+    // Retry current step
+    if (context.error) {
+      return actions.retry();
+    }
+
+    // Stop workflow
+    if (context.complete) {
+      return actions.stop();
+    }
+
+    // Wait 10 seconds
+    return actions.wait();
+  }
+});
+```
+
+**Available Actions:**
+
+| Action | Purpose |
+|--------|---------|
+| `actions.next()` | Go to next sequential step |
+| `actions.goto('stepId')` | Jump to specific step |
+| `actions.retry()` | Retry current step |
+| `actions.stop()` | End workflow |
+| `actions.wait()` | Pause for 10 seconds |
+
+---
+
+## Advanced Patterns
+
+### The Bungee Action (Parallelism)
+
+The **Bungee Action** is Wizard's most powerful pattern. It implements fan-out/fan-in: run a step multiple times in parallel, then return to the anchor.
+
+**Anatomy:**
+- **Anchor Step**: Where the bungee launches from
+- **Destination Step**: The step that runs in parallel
+- **Batch**: Each parallel run sees unique information
+- **Return**: All parallel runs complete, anchor continues
 
 ```mermaid
 graph TD
-    A[Main Flow] --> B[Anchor Step]
-    B --> C[🪂 Bungee Jump]
-    C --> D[Worker 1<br/>Process Item A]
-    C --> E[Worker 2<br/>Process Item B]
-    C --> F[Worker N<br/>Process Item Z]
-    D --> G[Collect Results]
-    E --> G
-    F --> G
-    G --> H[Return to Anchor]
-    H --> I[Continue Main Flow]
+    A[Anchor Step] --> B[🪂 Bungee Jump]
+    B --> C[Worker 1: Item A]
+    B --> D[Worker 2: Item B]
+    B --> E[Worker N: Item Z]
+    C --> F[Collect Results]
+    D --> F
+    E --> F
+    F --> G[Return to Anchor]
+    G --> H[Continue Flow]
 ```
 
-### Real-World Example: Document Search
-
-Imagine searching a 100-page document for answers. Instead of checking pages one-by-one:
+#### Real Example: Parallel Document Search
 
 ```javascript
-// Sequential approach (slow)
-for (let page = 1; page <= 100; page++) {
-  searchPage(page); // 100 sequential calls = ~5 minutes
-}
+wizard.setContext({
+  userQuestion: 'What are the key findings?',
+  totalPages: 100
+});
 
-// Bungee approach (fast)
+// Anchor step
 wizard.addComputeStep({
   id: 'parallel_search',
   update: (result, context, actions) => {
     return actions.bungee.init()
-      .batch('search_page', 100, (pageIndex) => ({
-        pageNumber: pageIndex + 1,
-        query: context.userQuestion
-      }))
-      .config({ concurrency: 10 }) // 10 pages at once
-      .jump(); // ~30 seconds total
+      .batch(
+        'search_page',              // Destination step
+        context.totalPages,         // Run 100 times
+        (pageIndex) => ({           // Each run gets unique context
+          pageNumber: pageIndex + 1,
+          query: context.userQuestion
+        })
+      )
+      .config({ 
+        concurrency: 10,  // 10 parallel workers
+        timeout: 30000    // 30s timeout per worker
+      })
+      .jump(); // Launch!
   }
 });
 
+// Destination step (runs 100 times in parallel)
 wizard.addTextStep({
   id: 'search_page',
   instruction: 'Search page {{pageNumber}} for: {{query}}',
+  schema: z.object({
+    hasRelevantInfo: z.boolean(),
+    excerpt: z.string().optional()
+  }),
+  model: Models.SWIZZY_DEFAULT,
   update: (result, context, actions) => {
-    if (result.includes('relevant content')) {
+    if (result.hasRelevantInfo) {
+      // Store result with unique key
       actions.updateContext({
-        [`page_${context.pageNumber}_result`]: result
+        [`page_${context.pageNumber}_result`]: result.excerpt
       });
     }
+    return actions.next(); // Return to anchor
+  }
+});
+
+// Back at anchor - collect results
+wizard.addComputeStep({
+  id: 'collect_results',
+  update: (result, context, actions) => {
+    const allResults = Object.keys(context)
+      .filter(key => key.startsWith('page_'))
+      .map(key => context[key]);
+    
+    actions.updateContext({ searchResults: allResults });
     return actions.next();
   }
 });
 ```
 
-**Result**: 10x faster execution with the same code complexity.
+**Power Move**: Process 100 pages in 30 seconds instead of 5 minutes.
 
-### Configuration Options
-
-```javascript
-actions.bungee.init()
-  .batch('stepId', itemCount, (index) => ({
-    // Context for each worker instance
-    itemIndex: index,
-    data: items[index]
-  }))
-  .config({
-    concurrency: 5,    // Max parallel workers
-    timeout: 30000     // Per-worker timeout in ms
-  })
-  .jump()
-```
+**When to Use Bungee:**
+- Batch processing (documents, images, data)
+- Parallel API calls
+- Multi-source information gathering
+- Any workflow bottleneck that can be parallelized
 
 ---
 
-## Developer Experience (DX)
+## Comparison with Alternatives
 
-### Real-Time Visualization
+| Feature | Wizard | LangChain | Vercel AI SDK | Raw LLM APIs |
+|---------|---------|-----------|---------------|--------------|
+| **Mental Model** | Developer orchestrates, LLM executes | LLM is the agent | Linear chat flows | Full manual control |
+| **Context Control** | ✅ Context functions + templates | ⚠️ Chain-based passing | ❌ Manual | ❌ Manual |
+| **State Machine** | ✅ Explicit action signals | ❌ Sequential chains | ❌ Linear only | ❌ Build yourself |
+| **Type Safety** | ✅ Zod validation on outputs | ⚠️ Optional | ⚠️ TypeScript only | ❌ None |
+| **Parallelism** | ✅ Bungee actions | ❌ Manual orchestration | ❌ Manual | ❌ Manual |
+| **Flow Control** | ✅ next/goto/retry/stop/wait | ⚠️ Limited | ⚠️ Limited | ❌ Manual |
+| **Learning Curve** | Medium | Steep | Low | High |
+| **Best For** | Complex multi-step workflows | General orchestration | Simple chat | Full control |
 
-Debug workflows visually with the built-in web interface:
+---
 
-```javascript
-const { server, url } = await wizard.visualize(3000);
-console.log(`🎯 Open ${url} in your browser`);
-```
-
-**Features:**
-- **Live Step Tracking**: See each step execute in real-time
-- **Token Monitoring**: Track LLM usage per step and total
-- **Context Inspector**: View context changes as they happen
-- **Interactive Controls**: Pause, resume, or step through execution
-- **Error Visualization**: See failures and retry attempts
-
-### Error Handling & Resilience
+## Complete Example
 
 ```javascript
-wizard.addTextStep({
-  id: 'unreliable_step',
-  instruction: 'This might fail sometimes',
-  update: (result, context, actions) => {
-    if (result.includes('ERROR')) {
-      // Automatic retry with backoff
-      return actions.retry();
-    }
+const { Wizard, Models } = require('@swizzy_ai/kit');
+const { z } = require('zod');
 
-    if (someCondition) {
-      // Jump to error handling step
-      return actions.goto('error_handler');
-    }
-
-    return actions.next();
+const wizard = new Wizard({
+  id: 'document-analyzer',
+  onUsage: (usage, provider) => {
+    console.log(`📊 Used ${usage.totalTokens} tokens`);
   }
 });
-```
 
-**Built-in Resilience:**
-- Automatic retry with exponential backoff
-- Configurable timeout handling
-- Context preservation across retries
-- Error context tracking (`${stepId}_error`)
-
-### TypeScript + Zod Integration
-
-Full type safety from LLM outputs to your application code:
-
-```typescript
-import { z } from 'zod';
-
-const AnalysisSchema = z.object({
-  sentiment: z.enum(['positive', 'negative', 'neutral']),
-  confidence: z.number().min(0).max(1),
-  keywords: z.array(z.string())
+// Initialize context
+wizard.setContext({
+  documentText: 'Your document content here...',
+  userQuery: 'Extract key insights'
 });
 
+// Step 1: Extract entities
 wizard.addTextStep({
-  id: 'analyze_text',
-  instruction: 'Analyze: {{text}}',
-  schema: AnalysisSchema,
+  id: 'extract_entities',
+  instruction: 'Extract named entities from: {{documentText}}',
+  schema: z.object({
+    people: z.array(z.string()),
+    organizations: z.array(z.string()),
+    confidence: z.number()
+  }),
   model: Models.SWIZZY_DEFAULT,
-  update: (data, context, actions) => {
-    // data is fully typed: AnalysisSchema.Type
-    console.log(data.sentiment); // TypeScript knows this is a valid enum
-    console.log(data.confidence); // TypeScript knows this is a number 0-1
+  update: (result, context, actions) => {
+    if (result.confidence < 0.8) {
+      return actions.retry(); // Low confidence, retry
+    }
+    actions.updateContext({ entities: result });
     return actions.next();
   }
 });
+
+// Step 2: Validate entities
+wizard.addComputeStep({
+  id: 'validate_entities',
+  update: (result, context, actions) => {
+    const hasEntities = context.entities.people.length > 0 ||
+                       context.entities.organizations.length > 0;
+    
+    if (!hasEntities) {
+      return actions.goto('extract_entities'); // Retry extraction
+    }
+    return actions.next();
+  }
+});
+
+// Step 3: Generate summary
+wizard.addTextStep({
+  id: 'generate_summary',
+  instruction: 'Summarize key insights about: {{entityList}}',
+  contextFunction: (context) => ({
+    entityList: [
+      ...context.entities.people.map(p => `Person: ${p}`),
+      ...context.entities.organizations.map(o => `Org: ${o}`)
+    ].join('\n')
+  }),
+  schema: z.object({
+    summary: z.string(),
+    keyInsights: z.array(z.string())
+  }),
+  model: Models.SWIZZY_DEFAULT,
+  update: (result, context, actions) => {
+    console.log('Summary:', result.summary);
+    console.log('Insights:', result.keyInsights);
+    return actions.stop(); // Done!
+  }
+});
+
+// Run the workflow
+wizard.run();
 ```
 
 ---
@@ -588,130 +455,84 @@ wizard.addTextStep({
 ### Wizard Constructor
 
 ```typescript
-new Wizard(config: WizardConfig)
-```
-
-```typescript
-interface WizardConfig {
-  id: string;                                    // Unique workflow identifier
-  systemPrompt?: string;                        // Global system prompt for LLMs
-  onUsage?: (usage: TokenUsage, provider: string) => void; // Token tracking callback
-}
+new Wizard(config: {
+  id: string;
+  systemPrompt?: string;
+  onUsage?: (usage: TokenUsage, provider: string) => void;
+})
 ```
 
 ### Core Methods
 
-| Method | Description | Example |
-|--------|-------------|---------|
-| `addStep(config)` | Add any type of step | `wizard.addStep({ id: 'step1', ... })` |
-| `addTextStep(config)` | Add LLM text generation step | `wizard.addTextStep({ id: 'generate', ... })` |
-| `addComputeStep(config)` | Add computational step | `wizard.addComputeStep({ id: 'process', ... })` |
-| `setContext(data)` | Initialize shared context | `wizard.setContext({ user: 'Alice' })` |
-| `getContext()` | Get current context | `const ctx = wizard.getContext()` |
-| `updateContext(data)` | Update context (fluent) | `wizard.updateContext({ result: data })` |
-| `run()` | Execute the workflow | `await wizard.run()` |
-| `visualize(port)` | Start web UI | `await wizard.visualize(3000)` |
-
-### Step Configuration
-
-#### TextStep Configuration
-```typescript
-interface TextStepConfig {
-  id: string;                           // Unique step identifier
-  instruction: string;                  // LLM prompt/instruction
-  schema?: z.ZodType;                   // Output validation schema
-  model: string;                        // LLM model identifier
-  contextType?: 'template' | 'xml' | 'both'; // How to inject context
-  contextFunction?: (context: any) => any;     // Dynamic context builder
-  update: StepUpdateFunction;           // Result handler
-}
-```
-
-#### ComputeStep Configuration
-```typescript
-interface ComputeStepConfig {
-  id: string;                    // Unique step identifier
-  instruction: string;           // Documentation/description
-  update: StepUpdateFunction;    // Logic handler
-}
-```
+| Method | Description |
+|--------|-------------|
+| `setContext(data)` | Initialize workflow context |
+| `getContext()` | Retrieve current context |
+| `updateContext(data)` | Update context (fluent API) |
+| `addTextStep(config)` | Add LLM-powered step |
+| `addComputeStep(config)` | Add logic-only step |
+| `addStep(config)` | Add custom step |
+| `run()` | Execute the workflow |
 
 ### Actions Interface
 
+Available in every `update` function:
+
 ```typescript
-interface WizardActions {
-  updateContext: (updates: Record<string, any>) => void;
-  llmClient: LLMClient;          // Direct LLM access if needed
-  goto: (stepId: string) => FlowControlSignal;
+{
+  updateContext: (updates: object) => void;
   next: () => FlowControlSignal;
-  stop: () => FlowControlSignal;
+  goto: (stepId: string) => FlowControlSignal;
   retry: () => FlowControlSignal;
+  stop: () => FlowControlSignal;
   wait: () => FlowControlSignal;
   bungee: {
-    init: () => BungeeBuilder;   // Start parallel execution
-  };
+    init: () => BungeeBuilder;
+  }
 }
 ```
 
-### TokenUsage Interface
+---
 
-```typescript
-interface TokenUsage {
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-}
-```
+## Examples
+
+Check the `/examples` directory for complete workflows:
+
+- **Document Analyzer**: Extract entities and generate insights
+- **Parallel Search**: Search 100+ pages using Bungee actions
+- **Multi-Step Validation**: Complex validation with retry logic
+- **Data Pipeline**: Transform and validate data across steps
 
 ---
 
 ## Contributing
 
-We welcome contributions! Here's how to get started:
-
-1. **Fork** the repository
-2. **Clone** your fork: `git clone https://github.com/yourusername/swizzy-kit.git`
-3. **Install** dependencies: `npm install`
-4. **Create** a feature branch: `git checkout -b feature/amazing-feature`
-5. **Make** your changes with tests
-6. **Run** tests: `npm test`
-7. **Submit** a pull request
-
-### Development Setup
+We welcome contributions! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 
 ```bash
-# Install dependencies
+# Setup
+git clone https://github.com/swizzy-ai/wizard-framework.git
 npm install
 
-# Run tests
-npm test
-
-# Build TypeScript
-npm run build
-
-# Run examples
-cd examples && node document-reader.js
+# Development
+npm test        # Run tests
+npm run build   # Build TypeScript
 ```
-
-### Guidelines
-
-- **Type Safety**: All code must be TypeScript with proper types
-- **Testing**: Add tests for new features
-- **Documentation**: Update README and inline docs
-- **Consistency**: Match existing code style and patterns
 
 ---
 
 ## License
 
-**MIT License** - see [LICENSE](LICENSE) file for details.
+MIT License - see [LICENSE](./LICENSE) for details.
 
 ---
 
 <div align="center">
 
-**Built with ❤️ for the AI orchestration revolution**
+**Invert the paradigm. Design the experience.**
 
-[GitHub](https://github.com/yourusername/swizzy-kit) • [Documentation](https://swizzy-kit.dev) • [Discord](https://discord.gg/swizzy-kit)
+[GitHub](https://github.com/swizzy-ai/wizard-framework) • [Documentation](https://docs.wizard.dev) • [Discord](https://discord.gg/wizard)
+
+⭐ Star us on GitHub if Wizard changes how you build with LLMs
 
 </div>

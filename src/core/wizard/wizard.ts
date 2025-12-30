@@ -1,7 +1,3 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import * as http from 'http';
-import * as WebSocket from 'ws';
 import { z } from 'zod';
 import { Step, StepConfig, FlowControlSignal, WizardActions } from './steps/base';
 import { TextStep, TextStepConfig } from './steps/text';
@@ -10,6 +6,12 @@ import { LLMClient } from '../../services/client/index';
 import { ProviderRegistry } from '../../services/client/registry';
 import { BungeeBuilder } from './bungee/builder';
 import { BungeePlan } from './bungee/types';
+import { VisualizationManager } from './visualization-manager';
+import { SchemaUtils } from './schema-utils';
+import { BungeeExecutor } from './bungee/executor';
+import { Logger } from './logger';
+import { UsageTracker } from './usage-tracker';
+import { ContextManager } from './context-manager';
 
 export interface WizardConfig {
   id: string;
@@ -18,7 +20,7 @@ export interface WizardConfig {
 }
 
 export interface WizardContext {
-  updateContext: (updates: any) => void;
+  updateContext: (updates: ContextData) => void;
   llmClient: LLMClient;
   goto: (stepId: string) => FlowControlSignal;
   next: () => FlowControlSignal;
@@ -26,44 +28,23 @@ export interface WizardContext {
   retry: () => FlowControlSignal;
 }
 
+type ContextData = Record<string, any>;
+
 export class Wizard {
   private static readonly TEMPLATE_REGEX = /\{\{(\w+(?:\.\w+)*)\}\}/g;
   private static readonly WIZARD_TAG_PATTERN = /<(\w+)\s+([^>]*tag-category=["']wizard["'][^>]*)>/gi;
+
+  // Flow control signals
+  private static readonly NEXT = 'NEXT';
+  private static readonly STOP = 'STOP';
+  private static readonly RETRY = 'RETRY';
+  private static readonly WAIT = 'WAIT';
 
   private id: string;
   private llmClient: LLMClient;
   private systemPrompt?: string;
   private steps: Array<Step | Step[]> = [];
-  private workflowContext: any = {};
-  private logFilePath: string | undefined;
-
-  // Bungee state tracking
-  private bungeeWorkers: Map<string, Map<string, {
-    planId: string;
-    workerId: string;
-    promise: Promise<any>;
-    telescope: Record<string, any>;
-  }>> = new Map();
-  private pendingReentry: Set<string> = new Set();
-
-  // Performance optimizations
   private stepIndexMap: Map<string, number> = new Map();
-  private schemaDescriptions: Map<string, string> = new Map();
-  private readonly maxCacheSize = 100;
-
-  // Visualization state
-  private visualizationServer?: http.Server;
-  private wss?: WebSocket.Server;
-  private visualizationPort?: number;
-  private connectedClients: Set<WebSocket> = new Set();
-  private readonly maxWebSocketConnections = 10;
-  private wsIntervals: WeakMap<WebSocket, NodeJS.Timeout> = new WeakMap();
-
-  // WebSocket messages sent immediately for real-time UI updates
-
-  // Token tracking
-  private totalTokens: number = 0;
-  private stepTokens: number = 0;
 
   private currentStepIndex: number = 0;
   private isPaused: boolean = false;
@@ -73,50 +54,62 @@ export class Wizard {
   private userOverrideData?: any;
   private runResolver?: () => void;
 
+  // Managers
+  private logger: Logger;
+  private usageTracker: UsageTracker;
+  private contextManager: ContextManager;
+  private visualizationManager: VisualizationManager;
+  private bungeeExecutor: BungeeExecutor;
+
+  private isLoggingEnabled = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
+
+  private debounce(func: Function, wait: number) {
+    let timeout: NodeJS.Timeout;
+    return (...args: any[]) => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => func.apply(this, args), wait);
+    };
+  }
+
+  private debouncedSendContextUpdate = this.debounce(() => {
+    this.visualizationManager.sendContextUpdate(this.contextManager.getContext());
+  }, 100);
+
+  // Getters for manager methods
+  private get workflowContext(): ContextData {
+    return this.contextManager.getContext();
+  }
+
+  private set workflowContext(value: ContextData) {
+    this.contextManager.setWorkflowContext(value);
+  }
+
+  private get log(): (message: string | (() => string)) => void {
+    return this.isLoggingEnabled ? this.logger.log.bind(this.logger) : () => {};
+  }
+
+  private get sendToClients(): (message: any) => void {
+    return this.visualizationManager.sendToClients.bind(this.visualizationManager);
+  }
+
+  private get visualizationServer(): any {
+    return this.visualizationManager.visualizationServer;
+  }
+
   constructor(config: WizardConfig) {
     this.id = config.id;
     const registry = new ProviderRegistry();
     this.llmClient = new LLMClient(registry);
     this.systemPrompt = config.systemPrompt;
 
-    // Set up token tracking
-    if (config.onUsage) {
-      const originalOnUsage = config.onUsage;
-      config.onUsage = (usage, provider) => {
-        this.totalTokens += usage.totalTokens;
-        this.stepTokens = usage.totalTokens; // Last step tokens
-        this.sendToClients({
-          type: 'token_update',
-          totalTokens: this.totalTokens,
-          stepTokens: this.stepTokens
-        });
-        originalOnUsage(usage, provider);
-      };
-    }
-
-    // Create logs directory if it doesn't exist
-    const logsDir = path.join(process.cwd(), '.wizard');
-    if (!fs.existsSync(logsDir)) {
-      fs.mkdirSync(logsDir, { recursive: true });
-    }
-    this.logFilePath = path.join(logsDir, `${this.id}.log`);
+    // Initialize managers
+    this.logger = new Logger(this.id);
+    this.usageTracker = new UsageTracker(config.onUsage);
+    this.contextManager = new ContextManager();
+    this.visualizationManager = new VisualizationManager(this);
+    this.bungeeExecutor = new BungeeExecutor(this);
   }
 
-  private log(messageOrFn: string | (() => string)): void {
-    if (!this.logFilePath) return; // Early exit if logging disabled
-    const message = typeof messageOrFn === 'function' ? messageOrFn() : messageOrFn;
-    const content = `${new Date().toISOString()}: ${message}\n`;
-    this.appendToFile(content);
-  }
-
-  private appendToFile(content: string): void {
-    if (!this.logFilePath) return;
-    try {
-      fs.appendFileSync(this.logFilePath, content, 'utf8');
-    } catch (error) {
-      console.log('Wizard log:', content.trim());
-    }
-  }
 
   addStep<T>(config: StepConfig<T>): this {
     const step = new Step(config);
@@ -158,14 +151,16 @@ export class Wizard {
   }
 
   goto(stepId: string): FlowControlSignal { return `GOTO ${stepId}`; }
-  next(): FlowControlSignal { return 'NEXT'; }
-  stop(): FlowControlSignal { return 'STOP'; }
-  retry(): FlowControlSignal { return 'RETRY'; }
-  wait(): FlowControlSignal { return 'WAIT'; }
+  next(): FlowControlSignal { return Wizard.NEXT; }
+  stop(): FlowControlSignal { return Wizard.STOP; }
+  retry(): FlowControlSignal { return Wizard.RETRY; }
+  wait(): FlowControlSignal { return Wizard.WAIT; }
 
   private clearStepError(stepId: string): void {
-    delete this.workflowContext[`${stepId}_error`];
-    delete this.workflowContext[`${stepId}_retryCount`];
+    const context = this.contextManager.getContext();
+    delete context[`${stepId}_error`];
+    delete context[`${stepId}_retryCount`];
+    this.contextManager.setWorkflowContext(context);
   }
 
   private isStringSignal(signal: FlowControlSignal): signal is string {
@@ -176,82 +171,125 @@ export class Wizard {
     return typeof signal === 'object' && signal !== null && signal.type === 'BUNGEE_JUMP';
   }
 
-  private async executeBungeePlan(plan: BungeePlan): Promise<void> {
-    console.log(`🪂 Executing Bungee plan ${plan.id} with ${plan.destinations.length} destinations`);
-
-    // Track active workers for this plan
-    const activeWorkers = new Set<Promise<void>>();
-
-    for (let i = 0; i < plan.destinations.length; i++) {
-      // Launch worker
-      const workerPromise = this.launchBungeeWorker(plan, i);
-      activeWorkers.add(workerPromise);
-
-      // Respect concurrency limit
-      if (activeWorkers.size >= plan.concurrency) {
-        await Promise.race(activeWorkers);
-        // Clean up completed workers
-        for (const promise of activeWorkers) {
-          if (promise !== workerPromise) {
-            activeWorkers.delete(promise);
+  private async handleFlowControlSignal(signal: FlowControlSignal): Promise<boolean> {
+    switch (signal) {
+      case Wizard.NEXT:
+        this.currentStepIndex++;
+        return true;
+      case Wizard.STOP:
+        return false;
+      case Wizard.RETRY:
+        return true;
+      case Wizard.WAIT:
+        await new Promise(resolve => setTimeout(resolve, 10 * 1000));
+        this.currentStepIndex++;
+        return true;
+      default:
+        if (this.isBungeeJumpSignal(signal)) {
+          await this.bungeeExecutor.executeBungeePlan(signal.plan);
+          return true;
+        } else if (this.isStringSignal(signal) && signal.startsWith('GOTO ')) {
+          const targetStepId = signal.substring(5);
+          const targetIndex = this.findStepIndex(targetStepId);
+          if (targetIndex !== -1) {
+            this.currentStepIndex = targetIndex;
+          } else {
+            throw new Error(`Unknown step ID for GOTO: ${targetStepId}`);
           }
+          return true;
         }
+    }
+    return true;
+  }
+
+  private async initializeRun(): Promise<void> {
+    if (this.visualizationServer) {
+      console.log('🎯 Waiting for UI to start wizard execution...');
+      this.sendToClients({ type: 'status_update', status: { waitingForStart: true, isStepMode: false } });
+      await this.waitForRunCommand();
+      console.log('🚀 Starting wizard execution from UI command');
+
+      // Send all steps info
+      const stepsInfo = this.steps.map(item => {
+        if (Array.isArray(item)) {
+          return item.map(step => ({
+            id: step.id,
+            instruction: step.instruction,
+            fields: SchemaUtils.extractSchemaFields(step.schema),
+            status: 'pending'
+          }));
+        } else {
+          return {
+            id: item.id,
+            instruction: item.instruction,
+            fields: SchemaUtils.extractSchemaFields(item.schema),
+            status: 'pending'
+          };
+        }
+      }).flat();
+      this.sendToClients({ type: 'wizard_start', steps: stepsInfo });
+    }
+
+    this.log('Wizard session started');
+    this.currentStepIndex = 0;
+    this.isRunning = true;
+  }
+
+  private async executeParallelSteps(parallelSteps: Step[]): Promise<FlowControlSignal> {
+    console.log(`Starting parallel steps: ${parallelSteps.map(s => s.id).join(', ')}`);
+    this.log(`Starting parallel steps: ${parallelSteps.map(s => s.id).join(', ')}`);
+
+    const promises = parallelSteps.map(step => this.executeStep(step));
+    const signals = await Promise.all(promises);
+
+    let nextSignal: FlowControlSignal = Wizard.NEXT;
+    for (const signal of signals) {
+      if (signal === Wizard.STOP) {
+        return Wizard.STOP;
+      }
+      if (this.isStringSignal(signal) && signal.startsWith('GOTO ')) {
+        nextSignal = signal;
+        break;
+      }
+      if (signal === Wizard.RETRY) {
+        nextSignal = Wizard.RETRY;
       }
     }
 
-    // Wait for all workers to complete
-    await Promise.all(activeWorkers);
-
-    console.log(`✅ Bungee plan ${plan.id} completed, returning to anchor ${plan.anchorId}`);
+    return nextSignal;
   }
 
-  private async launchBungeeWorker(plan: BungeePlan, index: number): Promise<void> {
-    const destination = plan.destinations[index];
-    const telescope = plan.configFn ? plan.configFn(index) : {};
-    const workerId = `${plan.id}_${destination.targetId}_${index}_${Date.now()}`;
-    const telescopeContext = this.createTelescopeContext(this.workflowContext, telescope);
-
-    const promise = this.executeWorkerStep(destination.targetId, telescopeContext);
-
-    // Track this worker
-    if (!this.bungeeWorkers.has(plan.id)) {
-      this.bungeeWorkers.set(plan.id, new Map());
-    }
-    this.bungeeWorkers.get(plan.id)!.set(workerId, {
-      planId: plan.id,
-      workerId,
-      promise,
-      telescope
-    });
-
-    try {
-      await promise;
-    } catch (error: any) {
-      console.error(`Bungee worker ${workerId} failed:`, error);
-      this.workflowContext[`${workerId}_error`] = error.message;
-    } finally {
-      // Clean up
-      const planWorkers = this.bungeeWorkers.get(plan.id);
-      if (planWorkers) {
-        planWorkers.delete(workerId);
-        if (planWorkers.size === 0) {
-          this.bungeeWorkers.delete(plan.id);
-          // Trigger reentry to anchor
-          this.pendingReentry.add(plan.anchorId);
-        }
-      }
-    }
+  private async executeSequentialStep(step: Step): Promise<void> {
+    const signal = await this.executeStep(step);
+    if (!(await this.handleFlowControlSignal(signal))) return;
   }
 
-  private createWizardActions(anchorStepId: string = ''): WizardActions {
+  private finalizeRun(startTime: number): void {
+    const endTime = Date.now();
+    const duration = endTime - startTime;
+
+    this.isRunning = false;
+    this.sendToClients({ type: 'status_update', status: { completed: true } });
+    console.log(`✅ Wizard completed in ${duration}ms`);
+  }
+
+
+
+  private createBaseActions(): Pick<WizardActions, 'updateContext' | 'llmClient' | 'goto' | 'next' | 'stop' | 'retry' | 'wait'> {
     return {
-      updateContext: (updates: Record<string, any>) => this.updateContext(updates),
+      updateContext: (updates: ContextData) => this.updateContext(updates),
       llmClient: this.llmClient,
       goto: (stepId: string) => this.goto(stepId),
       next: () => this.next(),
       stop: () => this.stop(),
       retry: () => this.retry(),
       wait: () => this.wait(),
+    };
+  }
+
+  private createWizardActions(anchorStepId: string = ''): WizardActions {
+    return {
+      ...this.createBaseActions(),
       bungee: {
         init: () => new BungeeBuilder(anchorStepId)
       }
@@ -260,15 +298,15 @@ export class Wizard {
 
   private createWorkerActions(telescope: Record<string, any>): WizardActions {
     return {
-      updateContext: (updates: Record<string, any>) => {
-        this.mergeWorkerResults(updates, telescope);
+      updateContext: (updates: ContextData) => {
+        this.bungeeExecutor.mergeWorkerResults(updates, telescope);
       },
       llmClient: this.llmClient,
-      goto: () => 'STOP',
-      next: () => 'STOP',
-      stop: () => 'STOP',
-      retry: () => 'STOP',
-      wait: () => 'STOP',
+      goto: () => Wizard.STOP,
+      next: () => Wizard.STOP,
+      stop: () => Wizard.STOP,
+      retry: () => Wizard.STOP,
+      wait: () => Wizard.STOP,
       bungee: {
         init: () => {
           throw new Error('Bungee not allowed in worker context');
@@ -277,58 +315,20 @@ export class Wizard {
     };
   }
 
-  private createTelescopeContext(baseContext: any, telescope: Record<string, any>): any {
-    return {
-      ...baseContext,
-      ...telescope,
-      _telescope: telescope,
-      _anchorId: null
-    };
-  }
 
-  private async executeWorkerStep(stepId: string, telescopeContext: any): Promise<any> {
-    const step = this.findStep(stepId);
-    if (!step) return;
 
-    const stepContext = step.getContext(telescopeContext);
-    const stepData = await this.generateStepData(step, stepContext);
-    const actions = this.createWorkerActions(telescopeContext._telescope);
 
-    return await step.update(stepData, telescopeContext, actions);
-  }
-
-  private mergeWorkerResults(updates: Record<string, any>, telescope: Record<string, any>): void {
-    Object.entries(updates).forEach(([key, value]) => {
-      this.workflowContext[key] = value;
-    });
-  }
-
-  private async retriggerAnchor(anchorId: string): Promise<void> {
-    const anchorStep = this.findStep(anchorId);
-    if (anchorStep) {
-      await this.executeStep(anchorStep);
-    }
-  }
-
-  private async processReentries(): Promise<void> {
-    const anchorsToRetrigger = Array.from(this.pendingReentry);
-    this.pendingReentry.clear();
-    for (const anchorId of anchorsToRetrigger) {
-      await this.retriggerAnchor(anchorId);
-    }
-  }
 
 
   public findStep(stepId: string): Step | null {
-    for (const item of this.steps) {
-      if (Array.isArray(item)) {
-        const found = item.find(s => s.id === stepId);
-        if (found) return found;
-      } else {
-        if (item.id === stepId) return item;
-      }
+    const index = this.stepIndexMap.get(stepId);
+    if (index === undefined) return null;
+    const item = this.steps[index];
+    if (Array.isArray(item)) {
+      return item.find(s => s.id === stepId) || null;
+    } else {
+      return item.id === stepId ? item : null;
     }
-    return null;
   }
 
   private findStepIndex(stepId: string): number {
@@ -337,47 +337,42 @@ export class Wizard {
 
   private async executeStep(step: Step): Promise<FlowControlSignal> {
     console.log(`Starting step ${step.id}`);
-    this.log(`Starting step ${step.id}`);
+    this.logger.log(`Starting step ${step.id}`);
 
-    const stepContext = step.getContext(this.workflowContext);
+    const stepContext = step.getContext(this.contextManager.getContext());
     let processedInstruction = step.instruction;
     if (step.contextType === 'template' || step.contextType === 'both') {
       processedInstruction = this.applyTemplate(step.instruction, stepContext);
     }
-    this.sendToClients({
-      type: 'step_update',
+    this.visualizationManager.sendStepUpdate({
       stepId: step.id,
       status: 'current',
       instruction: processedInstruction,
       context: stepContext,
-      fields: this.extractSchemaFields(step.schema)
+      fields: SchemaUtils.extractSchemaFields(step.schema)
     });
-    this.sendToClients({
-      type: 'context_update',
-      context: this.workflowContext
-    });
+    this.debouncedSendContextUpdate();
 
     try {
       if (step.beforeRun) {
         await step.beforeRun();
       }
 
-      this.log(() => `Context for step ${step.id}: ${JSON.stringify(stepContext)}`);
+      this.logger.log(() => `Context for step ${step.id}: ${JSON.stringify(stepContext)}`);
 
       // Skip LLM data generation for compute steps
       const stepData = (step as any).isComputeStep ? null : await this.generateStepData(step, stepContext);
 
       if (this.isPaused) {
         console.log('⏸️ Paused before LLM call, waiting for user input...');
-        await this.waitForResume();
+        await this.visualizationManager.waitForResume();
         console.log('▶️ Resumed, checking for user override...');
 
         if (this.userOverrideData) {
           console.log('📝 Using user override data');
           try {
             const validatedData = step.validate(this.userOverrideData);
-            this.sendToClients({
-              type: 'step_update',
+            this.visualizationManager.sendStepUpdate({
               stepId: step.id,
               status: 'completed',
               data: validatedData
@@ -399,22 +394,13 @@ export class Wizard {
       const actions = this.createWizardActions(step.id);
       const signal = await step.update(stepData, this.workflowContext, actions);
 
-      this.sendToClients({
-        type: 'step_update',
+      this.visualizationManager.sendStepUpdate({
         stepId: step.id,
         status: 'completed',
         data: stepData
       });
 
-      if (this.workflowContext[`${step.id}_error`]) {
-        this.clearStepError(step.id);
-      }
-
-      if (step.afterRun) {
-        await step.afterRun(stepData);
-      }
-
-      return signal;
+      return this.finalizeStepExecution(step, stepData, signal);
     } catch (error: any) {
       console.log('Processing error', error);
       this.updateContext({
@@ -425,10 +411,7 @@ export class Wizard {
     }
   }
 
-  private async processStepResult(step: Step, stepData: any): Promise<FlowControlSignal> {
-    const actions = this.createWizardActions(step.id);
-    const signal = await step.update(stepData, this.workflowContext, actions);
-
+  private async finalizeStepExecution(step: Step, stepData: any, signal: FlowControlSignal): Promise<FlowControlSignal> {
     if (this.workflowContext[`${step.id}_error`]) {
       this.clearStepError(step.id);
     }
@@ -440,16 +423,22 @@ export class Wizard {
     return signal;
   }
 
-  setContext(context: any): this {
+  private async processStepResult(step: Step, stepData: any): Promise<FlowControlSignal> {
+    const actions = this.createWizardActions(step.id);
+    const signal = await step.update(stepData, this.workflowContext, actions);
+    return this.finalizeStepExecution(step, stepData, signal);
+  }
+
+  setContext(context: ContextData): this {
     this.workflowContext = { ...this.workflowContext, ...context };
     return this;
   }
 
-  getContext(): any {
+  getContext(): ContextData {
     return this.workflowContext;
   }
 
-  updateContext(updates: any): this {
+  updateContext(updates: ContextData): this {
     this.workflowContext = { ...this.workflowContext, ...updates };
     return this;
   }
@@ -457,120 +446,28 @@ export class Wizard {
   async run(): Promise<void> {
     const startTime = Date.now();
 
-    if (this.visualizationServer) {
-      console.log('🎯 Waiting for UI to start wizard execution...');
-      this.sendToClients({ type: 'status_update', status: { waitingForStart: true, isStepMode: false } });
-      await this.waitForRunCommand();
-      console.log('🚀 Starting wizard execution from UI command');
-
-      // Send all steps info
-      const stepsInfo = this.steps.map(item => {
-        if (Array.isArray(item)) {
-          return item.map(step => ({
-            id: step.id,
-            instruction: step.instruction,
-            fields: this.extractSchemaFields(step.schema),
-            status: 'pending'
-          }));
-        } else {
-          return {
-            id: item.id,
-            instruction: item.instruction,
-            fields: this.extractSchemaFields(item.schema),
-            status: 'pending'
-          };
-        }
-      }).flat();
-      this.sendToClients({ type: 'wizard_start', steps: stepsInfo });
-    }
-
-    this.log('Wizard session started');
-    this.currentStepIndex = 0;
-    this.isRunning = true;
+    await this.initializeRun();
 
     while (this.currentStepIndex < this.steps.length && this.isRunning) {
       const item = this.steps[this.currentStepIndex];
       if (!item) break;
 
       if (Array.isArray(item)) {
-        const parallelSteps = item;
-        console.log(`Starting parallel steps: ${parallelSteps.map(s => s.id).join(', ')}`);
-        this.log(`Starting parallel steps: ${parallelSteps.map(s => s.id).join(', ')}`);
-
-        const promises = parallelSteps.map(step => this.executeStep(step));
-        const signals = await Promise.all(promises);
-
-        let nextSignal: FlowControlSignal = 'NEXT';
-        for (const signal of signals) {
-          if (signal === 'STOP') {
-            return;
-          }
-          if (this.isStringSignal(signal) && signal.startsWith('GOTO ')) {
-            nextSignal = signal;
-            break;
-          }
-          if (signal === 'RETRY') {
-            nextSignal = 'RETRY';
-          }
-        }
-
-        if (nextSignal === 'NEXT') {
-          this.currentStepIndex++;
-        } else if (nextSignal === 'RETRY') {
-          // Retry parallel steps
-        } else if (this.isStringSignal(nextSignal) && nextSignal.startsWith('GOTO ')) {
-          const targetStepId = nextSignal.substring(5);
-          const targetIndex = this.findStepIndex(targetStepId);
-          if (targetIndex !== -1) {
-            this.currentStepIndex = targetIndex;
-          } else {
-            throw new Error(`Unknown step ID for GOTO: ${targetStepId}`);
-          }
-        }
+        const signal = await this.executeParallelSteps(item);
+        if (!(await this.handleFlowControlSignal(signal))) return;
       } else {
-        const signal = await this.executeStep(item);
-
-        switch (signal) {
-          case 'NEXT':
-            this.currentStepIndex++;
-            break;
-          case 'STOP':
-            return;
-          case 'RETRY':
-            break;
-          case 'WAIT':
-            await new Promise(resolve => setTimeout(resolve, 10 * 1000));
-            this.currentStepIndex++;
-            break;
-          default:
-            if (this.isBungeeJumpSignal(signal)) {
-              await this.executeBungeePlan(signal.plan);
-            } else if (this.isStringSignal(signal) && signal.startsWith('GOTO ')) {
-              const targetStepId = signal.substring(5);
-              const targetIndex = this.findStepIndex(targetStepId);
-              if (targetIndex !== -1) {
-                this.currentStepIndex = targetIndex;
-              } else {
-                throw new Error(`Unknown step ID for GOTO: ${targetStepId}`);
-              }
-            }
-        }
+        await this.executeSequentialStep(item);
       }
 
-    if (this.isStepMode) {
-      this.isPaused = true;
-      await this.waitForResume();
+      if (this.isStepMode) {
+        this.isPaused = true;
+        await this.visualizationManager.waitForResume();
+      }
+
+      await this.bungeeExecutor.processReentries();
     }
 
-    await this.processReentries();
-  }
-
-    const endTime = Date.now();
-    const duration = endTime - startTime;
-
-    this.isRunning = false;
-    this.sendToClients({ type: 'status_update', status: { completed: true } });
-    console.log(`✅ Wizard completed in ${duration}ms`);
+    this.finalizeRun(startTime);
   }
 
   private async waitForRunCommand(): Promise<void> {
@@ -619,7 +516,7 @@ Generate the text response now.`;
       return llmResult.text;
     }
 
-    const schemaDescription = this.describeSchema(step.schema, step.id);
+    const schemaDescription = SchemaUtils.describeSchema(step.schema, step.id);
     const prompt = `${systemContext}You are executing a wizard step. Generate data for this step.
 
 STEP: ${step.id}
@@ -688,7 +585,7 @@ Generate the XML response now.`;
   private async repairSchemaData(invalidData: any, schema: z.ZodType<any>, validationError: string, stepId: string): Promise<any> {
     const step = this.findStep(stepId);
     if (!step) throw new Error(`Step ${stepId} not found`);
-    const schemaDescription = this.describeSchema(schema, stepId);
+    const schemaDescription = SchemaUtils.describeSchema(schema, stepId);
 
     const prompt = `You are repairing invalid data for a wizard step. The data failed validation and needs to be fixed to match the schema.
 
@@ -725,76 +622,6 @@ Fix the data to match the schema and generate the XML response now.`;
     return repairedJsonData;
   }
 
-  private describeSchema(schema: z.ZodType<any>, stepId?: string): string {
-    if (stepId && this.schemaDescriptions.has(stepId)) {
-      return this.schemaDescriptions.get(stepId)!;
-    }
-
-    let description: string;
-    if (schema instanceof z.ZodObject) {
-      const shape = schema._def.shape();
-      const fields = Object.entries(shape).map(([key, fieldSchema]: [string, any]) => {
-        const type = this.getSchemaType(fieldSchema);
-        const xmlExample = this.getXmlExample(key, type);
-        return `${key}: ${type} - ${xmlExample}`;
-      });
-      description = `Object with fields:\n${fields.join('\n')}`;
-    } else {
-      description = 'Unknown schema type';
-    }
-
-    if (stepId) {
-      // Implement simple cache eviction if needed
-      if (this.schemaDescriptions.size >= this.maxCacheSize) {
-        const firstKey = this.schemaDescriptions.keys().next().value;
-        this.schemaDescriptions.delete(firstKey || '');
-      }
-      this.schemaDescriptions.set(stepId, description);
-    }
-
-    return description;
-  }
-
-  private getXmlExample(key: string, type: string): string {
-    switch (type) {
-      case 'string': return `<${key} tag-category="wizard" type="string">example`;
-      case 'number': return `<${key} tag-category="wizard" type="number">123`;
-      case 'boolean': return `<${key} tag-category="wizard" type="boolean">true`;
-      case 'array': return `<${key} tag-category="wizard" type="array">["item1", "item2"]`;
-      default:
-        if (type.startsWith('enum:')) {
-          const values = type.split(': ')[1].split(', ');
-          return `<${key} tag-category="wizard" type="string">${values[0]}`;
-        }
-        return `<${key} tag-category="wizard" type="object"><subfield type="string">value</subfield>`;
-    }
-  }
-
-  private getSchemaType(schema: z.ZodType<any>): string {
-    if (schema instanceof z.ZodOptional) return this.getSchemaType(schema._def.innerType);
-    if (schema instanceof z.ZodString) return 'string';
-    if (schema instanceof z.ZodNumber) return 'number';
-    if (schema instanceof z.ZodBoolean) return 'boolean';
-    if (schema instanceof z.ZodArray) return 'array';
-    if (schema instanceof z.ZodEnum) return `enum: ${schema._def.values.join(', ')}`;
-    return 'object';
-  }
-
-  private extractSchemaFields(schema: z.ZodType<any>): Array<{ key: string, type: string, enumValues?: string[] }> {
-    if (!(schema instanceof z.ZodObject)) return [];
-    const shape = schema._def.shape();
-    const fields: Array<{ key: string, type: string, enumValues?: string[] }> = [];
-    for (const [key, fieldSchema] of Object.entries(shape)) {
-      const type = this.getSchemaType(fieldSchema as z.ZodType<any>);
-      const field: { key: string, type: string, enumValues?: string[] } = { key, type };
-      if (type.startsWith('enum:')) {
-        field.type = 'enum';
-        field.enumValues = type.substring(5).split(', ');
-      }
-      fields.push(field);
-    }
-    return fields;
-  }
 
   private parseXmlToJson(xml: string): any {
     const responseMatch = xml.match(/<response\s*>([\s\S]*?)(?:<\/response\s*>|$)/i);
@@ -985,215 +812,7 @@ Fix the data to match the schema and generate the XML response now.`;
     });
   }
 
-  async visualize(port: number = 3000): Promise<{ server: http.Server; url: string }> {
-    return new Promise((resolve, reject) => {
-      const server = http.createServer((req, res) => {
-        if (req.url === '/') {
-          res.writeHead(200, { 'Content-Type': 'text/html' });
-          res.end(this.getVisualizationHtml());
-        } else {
-          res.writeHead(404);
-          res.end('Not found');
-        }
-      });
-
-      this.wss = new WebSocket.Server({ server });
-      this.setupWebSocketHandlers();
-
-      server.listen(port, 'localhost', () => {
-        this.visualizationPort = port;
-        this.visualizationServer = server;
-        const url = `http://localhost:${port}`;
-        console.log(`🎯 Wizard visualization available at: ${url}`);
-        resolve({ server, url });
-      });
-
-      server.on('error', (err: any) => {
-        if (err.code === 'EADDRINUSE') {
-          this.visualize(port + 1).then(resolve).catch(reject);
-        } else {
-          reject(err);
-        }
-      });
-    });
-  }
-
-  private setupWebSocketHandlers(): void {
-    if (!this.wss) return;
-
-    this.wss.on('connection', (ws: WebSocket) => {
-      if (this.connectedClients.size >= this.maxWebSocketConnections) {
-        console.log('🔗 WebSocket connection rejected: max connections reached');
-        ws.close(1008, 'Max connections reached');
-        return;
-      }
-
-      console.log('🔗 WebSocket client connected');
-      this.connectedClients.add(ws);
-
-      const pingInterval = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.ping();
-        } else {
-          clearInterval(pingInterval);
-        }
-      }, 30000);
-
-      this.wsIntervals.set(ws, pingInterval);
-
-      ws.on('message', (message: Buffer) => {
-        try {
-          const data = JSON.parse(message.toString());
-          this.handleWebSocketMessage(data, ws);
-        } catch (error) {
-          console.error('Invalid WebSocket message:', error);
-        }
-      });
-
-      ws.on('close', () => {
-        console.log('🔌 WebSocket client disconnected');
-        this.connectedClients.delete(ws);
-        const interval = this.wsIntervals.get(ws);
-        if (interval) {
-          clearInterval(interval);
-          this.wsIntervals.delete(ws);
-        }
-      });
-
-      ws.on('error', () => {
-        this.connectedClients.delete(ws);
-        const interval = this.wsIntervals.get(ws);
-        if (interval) {
-          clearInterval(interval);
-          this.wsIntervals.delete(ws);
-        }
-      });
-
-      this.sendToClients({ type: 'status_update', status: { waitingForStart: true, isRunning: false, isPaused: false } });
-    });
-  }
-
-  private handleWebSocketMessage(data: any, ws: WebSocket): void {
-    switch (data.type) {
-      case 'control':
-        switch (data.action) {
-          case 'start':
-            console.log('🚀 Starting wizard execution from UI');
-            this.isRunning = true;
-            this.sendToClients({ type: 'status_update', status: { isRunning: true, isPaused: false, isStepMode: false } });
-            if (this.runResolver) {
-              this.runResolver();
-              this.runResolver = undefined;
-            }
-            break;
-
-          case 'pause':
-            this.isPaused = true;
-            console.log('⏸️ Wizard execution paused');
-            this.sendToClients({ type: 'status_update', status: { isPaused: true, isStepMode: this.isStepMode } });
-            break;
-
-          case 'resume':
-            this.isPaused = false;
-            this.isStepMode = false;
-            console.log('▶️ Wizard execution resumed');
-            if (this.pauseResolver) {
-              this.pauseResolver();
-              this.pauseResolver = undefined;
-            }
-            this.sendToClients({ type: 'status_update', status: { isPaused: false, isStepMode: false } });
-            break;
-
-          case 'step_forward':
-            if (this.isPaused) {
-              this.isStepMode = true;
-              console.log('⏭️ Stepping forward');
-              if (this.pauseResolver) {
-                this.pauseResolver();
-                this.pauseResolver = undefined;
-              }
-              this.sendToClients({ type: 'status_update', status: { isPaused: true, isStepMode: true } });
-            }
-            break;
-
-          case 'stop':
-            console.log('🛑 Stopping wizard execution');
-            this.isRunning = false;
-            this.isPaused = false;
-            this.isStepMode = false;
-            this.sendToClients({ type: 'status_update', status: { isRunning: false, isPaused: false, isStepMode: false } });
-            break;
-
-          case 'replay':
-            console.log('🔄 Replaying wizard - resetting state');
-            this.isRunning = false;
-            this.isPaused = false;
-            this.workflowContext = {};
-            this.sendToClients({ type: 'status_update', status: { isRunning: false, isPaused: false, waitingForStart: true } });
-            break;
-        }
-        break;
-
-      case 'run':
-        console.log('🚀 Starting wizard execution from UI (run command)');
-        this.isRunning = true;
-        this.sendToClients({ type: 'status_update', status: { isRunning: true, isPaused: false } });
-        if (this.runResolver) {
-          this.runResolver();
-          this.runResolver = undefined;
-        }
-        break;
-
-      case 'form_submit':
-        this.userOverrideData = data.data;
-        console.log('📝 User override data received:', data.data);
-        if (this.pauseResolver) {
-          this.pauseResolver();
-          this.pauseResolver = undefined;
-        }
-        break;
-
-      case 'update_step_data':
-        this.updateContext(data.data);
-        console.log('📝 Step data updated:', data.data);
-        break;
-
-      case 'goto':
-        const index = this.findStepIndex(data.stepId);
-        if (index !== -1) {
-          this.currentStepIndex = index;
-          this.isRunning = true;
-          this.isPaused = false;
-          this.isStepMode = false;
-          console.log(`🔄 Going to step ${data.stepId}`);
-          this.sendToClients({ type: 'status_update', status: { isRunning: true, isPaused: false, isStepMode: false } });
-        }
-        break;
-    }
-  }
-
-  private sendToClients(message: any): void {
-    const messageStr = JSON.stringify(message);
-    this.connectedClients.forEach(client => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(messageStr);
-      }
-    });
-  }
-
-
-  private async waitForResume(): Promise<void> {
-    return new Promise(resolve => {
-      this.pauseResolver = resolve;
-    });
-  }
-
-  private getVisualizationHtml(): string {
-    const fs = require('fs');
-    const path = require('path');
-
-    // Read the HTML file (now self-contained with inline CSS and JS)
-    const htmlPath = path.join(__dirname, 'ui/wizard-visualizer.html');
-    return fs.readFileSync(htmlPath, 'utf-8');
+  async visualize(port: number = 3000): Promise<{ server: any; url: string }> {
+    return this.visualizationManager.visualize(port);
   }
 }

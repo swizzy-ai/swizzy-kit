@@ -9,6 +9,7 @@ export interface CompletionOptions {
   maxTokens?: number;
   temperature?: number;
   stream?: boolean;
+  onChunk?: (chunk: string) => void;
   onUsage?: (usage: { promptTokens: number; completionTokens: number; totalTokens: number }, provider: string) => void;
 }
 
