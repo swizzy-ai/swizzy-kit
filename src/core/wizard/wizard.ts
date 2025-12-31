@@ -13,6 +13,25 @@ import { Logger } from './logger';
 import { UsageTracker } from './usage-tracker';
 import { ContextManager } from './context-manager';
 
+// Simple EventEmitter for wizard events
+class EventEmitter {
+  private events: Map<string, Function[]> = new Map();
+
+  on(event: string, callback: Function) {
+    if (!this.events.has(event)) {
+      this.events.set(event, []);
+    }
+    this.events.get(event)!.push(callback);
+  }
+
+  emit(event: string, data?: any) {
+    const callbacks = this.events.get(event);
+    if (callbacks) {
+      callbacks.forEach(cb => cb(data));
+    }
+  }
+}
+
 export interface WizardConfig {
   id: string;
   systemPrompt?: string;
@@ -50,9 +69,9 @@ export class Wizard {
   private isPaused: boolean = false;
   private isRunning: boolean = false;
   private isStepMode: boolean = false;
+  private skipStartWait = false;
   private pauseResolver?: () => void;
   private userOverrideData?: any;
-  private runResolver?: () => void;
 
   // Managers
   private logger: Logger;
@@ -60,6 +79,7 @@ export class Wizard {
   private contextManager: ContextManager;
   private visualizationManager: VisualizationManager;
   private bungeeExecutor: BungeeExecutor;
+  private events: EventEmitter;
 
   private isLoggingEnabled = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
 
@@ -104,10 +124,13 @@ export class Wizard {
 
     // Initialize managers
     this.logger = new Logger(this.id);
-    this.usageTracker = new UsageTracker(config.onUsage);
     this.contextManager = new ContextManager();
     this.visualizationManager = new VisualizationManager(this);
+    this.usageTracker = new UsageTracker(config.onUsage, (totalTokens, rate) => {
+      this.visualizationManager.sendTokenUpdate(totalTokens, rate);
+    });
     this.bungeeExecutor = new BungeeExecutor(this);
+    this.events = new EventEmitter();
   }
 
 
@@ -155,6 +178,11 @@ export class Wizard {
   stop(): FlowControlSignal { return Wizard.STOP; }
   retry(): FlowControlSignal { return Wizard.RETRY; }
   wait(): FlowControlSignal { return Wizard.WAIT; }
+
+  on(event: string, callback: Function): this {
+    this.events.on(event, callback);
+    return this;
+  }
 
   private clearStepError(stepId: string): void {
     const context = this.contextManager.getContext();
@@ -206,7 +234,7 @@ export class Wizard {
     if (this.visualizationServer) {
       console.log('🎯 Waiting for UI to start wizard execution...');
       this.sendToClients({ type: 'status_update', status: { waitingForStart: true, isStepMode: false } });
-      await this.waitForRunCommand();
+      await this.visualizationManager.waitForRunCommand();
       console.log('🚀 Starting wizard execution from UI command');
 
       // Send all steps info
@@ -232,7 +260,29 @@ export class Wizard {
 
     this.log('Wizard session started');
     this.currentStepIndex = 0;
+    this.usageTracker.setStartTime(Date.now());
     this.isRunning = true;
+
+    // Emit start event
+    this.events.emit('start', {
+      wizardId: this.id,
+      timestamp: Date.now(),
+      steps: this.steps.map(item => {
+        if (Array.isArray(item)) {
+          return item.map(step => ({
+            id: step.id,
+            instruction: step.instruction,
+            fields: SchemaUtils.extractSchemaFields(step.schema)
+          }));
+        } else {
+          return {
+            id: item.id,
+            instruction: item.instruction,
+            fields: SchemaUtils.extractSchemaFields(item.schema)
+          };
+        }
+      }).flat()
+    });
   }
 
   private async executeParallelSteps(parallelSteps: Step[]): Promise<FlowControlSignal> {
@@ -271,6 +321,13 @@ export class Wizard {
     this.isRunning = false;
     this.sendToClients({ type: 'status_update', status: { completed: true } });
     console.log(`✅ Wizard completed in ${duration}ms`);
+
+    // Emit complete event
+    this.events.emit('complete', {
+      duration,
+      totalSteps: this.steps.length,
+      timestamp: endTime
+    });
   }
 
 
@@ -339,6 +396,15 @@ export class Wizard {
     console.log(`Starting step ${step.id}`);
     this.logger.log(`Starting step ${step.id}`);
 
+    const stepStartTime = Date.now();
+
+    // Emit step:start event
+    this.events.emit('step:start', {
+      stepId: step.id,
+      instruction: step.instruction,
+      timestamp: stepStartTime
+    });
+
     const stepContext = step.getContext(this.contextManager.getContext());
     let processedInstruction = step.instruction;
     if (step.contextType === 'template' || step.contextType === 'both') {
@@ -388,6 +454,15 @@ export class Wizard {
 
       if (stepData && stepData.__validationFailed) {
         console.log(`🔄 Validation failed for step ${step.id}, retrying...`, stepData);
+
+        // Emit step:retry event
+        this.events.emit('step:retry', {
+          stepId: step.id,
+          attempt: (this.workflowContext[`${step.id}_retryCount`] || 0) + 1,
+          error: stepData.error,
+          timestamp: Date.now()
+        });
+
         return 'RETRY';
       }
 
@@ -400,9 +475,28 @@ export class Wizard {
         data: stepData
       });
 
+      this.logger.log(() => `Step ${step.id} completed with data: ${JSON.stringify(stepData)}`);
+
+      // Emit step:complete event
+      this.events.emit('step:complete', {
+        stepId: step.id,
+        data: stepData,
+        duration: Date.now() - stepStartTime,
+        timestamp: Date.now()
+      });
+
       return this.finalizeStepExecution(step, stepData, signal);
     } catch (error: any) {
       console.log('Processing error', error);
+
+      // Emit step:error event
+      this.events.emit('step:error', {
+        stepId: step.id,
+        error: error,
+        retryCount: (this.workflowContext[`${step.id}_retryCount`] || 0) + 1,
+        timestamp: Date.now()
+      });
+
       this.updateContext({
         [`${step.id}_error`]: error.message,
         [`${step.id}_retryCount`]: (this.workflowContext[`${step.id}_retryCount`] || 0) + 1
@@ -448,33 +542,67 @@ export class Wizard {
 
     await this.initializeRun();
 
+    this.executionLoop();
+  }
+
+  public startFrom(stepId: string): void {
+    const index = this.findStepIndex(stepId);
+    if (index === -1) return;
+    this.currentStepIndex = index;
+    this.isRunning = true;
+    this.isPaused = false;
+    this.isStepMode = false;
+    this.usageTracker.setStartTime(Date.now());
+    this.events.emit('start', {
+      wizardId: this.id,
+      timestamp: Date.now(),
+      steps: this.steps.map(item => {
+        if (Array.isArray(item)) {
+          return item.map(step => ({
+            id: step.id,
+            instruction: step.instruction,
+            fields: SchemaUtils.extractSchemaFields(step.schema)
+          }));
+        } else {
+          return {
+            id: item.id,
+            instruction: item.instruction,
+            fields: SchemaUtils.extractSchemaFields(item.schema)
+          };
+        }
+      }).flat()
+    });
+    this.executionLoop();
+  }
+
+  private async executionLoop(): Promise<void> {
+    const startTime = Date.now();
     while (this.currentStepIndex < this.steps.length && this.isRunning) {
       const item = this.steps[this.currentStepIndex];
       if (!item) break;
-
       if (Array.isArray(item)) {
         const signal = await this.executeParallelSteps(item);
         if (!(await this.handleFlowControlSignal(signal))) return;
       } else {
         await this.executeSequentialStep(item);
       }
-
       if (this.isStepMode) {
         this.isPaused = true;
+        this.events.emit('pause', {
+          timestamp: Date.now(),
+          currentStepId: (this.steps[this.currentStepIndex] as any)?.id
+        });
         await this.visualizationManager.waitForResume();
+        this.events.emit('resume', {
+          timestamp: Date.now(),
+          currentStepId: (this.steps[this.currentStepIndex] as any)?.id
+        });
       }
-
       await this.bungeeExecutor.processReentries();
     }
-
     this.finalizeRun(startTime);
   }
 
-  private async waitForRunCommand(): Promise<void> {
-    return new Promise(resolve => {
-      this.runResolver = resolve;
-    });
-  }
 
   public async generateStepData(step: Step, stepContext: any): Promise<any> {
     const systemContext = this.systemPrompt ? `${this.systemPrompt}\n\n` : '';
@@ -516,6 +644,10 @@ Generate the text response now.`;
       return llmResult.text;
     }
 
+    // For regular steps, use streaming
+    const parser = this.createStreamingXmlParser();
+    let latestResult: any = {};
+
     const schemaDescription = SchemaUtils.describeSchema(step.schema, step.id);
     const prompt = `${systemContext}You are executing a wizard step. Generate data for this step.
 
@@ -530,6 +662,13 @@ Return a plain XML response with a root <response> tag.
 CRITICAL: Every field MUST include tag-category="wizard" attribute. This is MANDATORY.
 Every field MUST also include a type attribute (e.g., type="string", type="number", type="boolean", type="array").
 
+ARRAY FORMATTING RULES (CRITICAL):
+- Arrays MUST be valid JSON on a SINGLE line
+- Use double quotes, not single quotes: ["a", "b"] NOT ['a', 'b']
+- NO trailing commas: ["a", "b"] NOT ["a", "b",]
+- NO line breaks inside arrays
+- Example: <items tag-category="wizard" type="array">["apple", "banana", "orange"]
+
 IMPORTANT PARSING RULES:
 - Fields with tag-category="wizard" do NOT need closing tags
 - Content ends when the next tag with tag-category="wizard" begins, OR when </response> is reached
@@ -540,15 +679,10 @@ Example:
 <response>
   <name tag-category="wizard" type="string">John Smith
   <age tag-category="wizard" type="number">25
-  <code tag-category="wizard" type="string">
-    function example() {
-      const x = <div>Hello</div>;
-      return x;
-    }
   <tags tag-category="wizard" type="array">["a", "b", "c"]
 </response>
 
-Notice: No closing tags needed for wizard fields! Content naturally ends at the next wizard field or </response>.
+Notice: Arrays are compact JSON on one line! No closing tags needed for wizard fields.
 
 Generate the XML response now.`;
 
@@ -559,20 +693,33 @@ Generate the XML response now.`;
       model: step.model,
       maxTokens: 1000,
       temperature: 0.3,
+      stream: true,
+      onChunk: (chunk: string) => {
+        const parseResult = parser.push(chunk);
+        if (parseResult && !parseResult.done) {
+          latestResult = parseResult.result;
+          // Optionally: Send partial results to UI
+          this.visualizationManager.sendStepUpdate({
+            stepId: step.id,
+            status: 'streaming',
+            data: latestResult
+          });
+        } else if (parseResult?.done) {
+          latestResult = parseResult.result;
+        }
+      },
+      onUsage: this.usageTracker.updateUsage.bind(this.usageTracker)
     });
 
-    this.log(() => `LLM response for step ${step.id}: ${llmResult.text}`);
-    console.log(`LLM response for step ${step.id}:`, llmResult.text);
+    this.log(() => `Final parsed data: ${JSON.stringify(latestResult)}`);
 
-    const jsonData = this.parseXmlToJson(llmResult.text);
-
-    this.log(() => `Parsed JSON data for step ${step.id}: ${JSON.stringify(jsonData)}`);
+    this.log(() => `Parsed JSON data for step ${step.id}: ${JSON.stringify(latestResult)}`);
     try {
-      return step.validate(jsonData);
+      return step.validate(latestResult);
     } catch (validationError: any) {
       this.log(() => `Validation failed for step ${step.id}: ${validationError.message}`);
       try {
-        const repairedData = await this.repairSchemaData(jsonData, step.schema, validationError.message, step.id);
+        const repairedData = await this.repairSchemaData(latestResult, step.schema, validationError.message, step.id);
         this.log(() => `Repaired data for step ${step.id}: ${JSON.stringify(repairedData)}`);
         return step.validate(repairedData);
       } catch (repairError: any) {
@@ -622,6 +769,71 @@ Fix the data to match the schema and generate the XML response now.`;
     return repairedJsonData;
   }
 
+
+  private createStreamingXmlParser() {
+    let buffer = '';
+    let inResponse = false;
+    const result: any = {};
+    let currentField: { name: string; type: string; content: string } | null = null;
+
+    return {
+      push: (chunk: string) => {
+        buffer += chunk;
+
+        // Detect <response> start
+        if (!inResponse && buffer.includes('<response>')) {
+          inResponse = true;
+          buffer = buffer.slice(buffer.indexOf('<response>') + 10);
+        }
+
+        if (!inResponse) return null;
+
+        // Parse wizard-tagged fields incrementally
+        const tagMatch = buffer.match(Wizard.WIZARD_TAG_PATTERN);
+        if (tagMatch) {
+          // If we have a current field, finalize it
+          if (currentField) {
+            result[currentField.name] = this.parseValueByType(
+              currentField.content.trim(),
+              currentField.type
+            );
+          }
+
+          // Start new field
+          const typeMatch = tagMatch[2].match(/type=["']([^"']+)["']/);
+          currentField = {
+            name: tagMatch[1],
+            type: typeMatch?.[1]?.toLowerCase() || 'string',
+            content: ''
+          };
+
+          buffer = buffer.slice(tagMatch.index! + tagMatch[0].length);
+        }
+
+        // Accumulate content for current field
+        if (currentField) {
+          const nextTagIndex = buffer.search(/<\w+\s+[^>]*tag-category=["']wizard["']/);
+          if (nextTagIndex !== -1) {
+            currentField.content += buffer.slice(0, nextTagIndex);
+            buffer = buffer.slice(nextTagIndex);
+          } else if (buffer.includes('</response>')) {
+            const endIndex = buffer.indexOf('</response>');
+            currentField.content += buffer.slice(0, endIndex);
+            result[currentField.name] = this.parseValueByType(
+              currentField.content.trim(),
+              currentField.type
+            );
+            return { done: true, result };
+          } else {
+            currentField.content += buffer;
+            buffer = '';
+          }
+        }
+
+        return { done: false, result: { ...result } };
+      }
+    };
+  }
 
   private parseXmlToJson(xml: string): any {
     const responseMatch = xml.match(/<response\s*>([\s\S]*?)(?:<\/response\s*>|$)/i);
@@ -712,6 +924,18 @@ Fix the data to match the schema and generate the XML response now.`;
     return result;
   }
 
+  private parseValueByType(content: string, type: string): any {
+    switch (type) {
+      case 'string': return content;
+      case 'number': return this.parseNumber(content);
+      case 'boolean': return this.parseBoolean(content);
+      case 'array': return this.parseArray(content);
+      case 'object': return this.parseXmlElementWithTagCategory(content);
+      case 'null': return null;
+      default: return this.inferAndParseValue(content);
+    }
+  }
+
   private parseNumber(value: string): number {
     const num = Number(value);
     if (isNaN(num)) {
@@ -728,15 +952,162 @@ Fix the data to match the schema and generate the XML response now.`;
   }
 
   private parseArray(value: string): any[] {
+    const trimmed = value.trim();
+
+    // Strategy 1: Try direct JSON parse
     try {
-      const parsed = JSON.parse(value);
-      if (!Array.isArray(parsed)) {
-        throw new Error('Parsed value is not an array');
-      }
-      return parsed;
-    } catch (error) {
-      throw new Error(`Invalid array JSON: "${value}"`);
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) return parsed;
+    } catch (e) {
+      // Continue to fallback strategies
     }
+
+    // Strategy 2: Fix common JSON issues and retry
+    try {
+      let fixed = trimmed
+        // Remove trailing commas before closing bracket
+        .replace(/,(\s*[}\]])/g, '$1')
+        // Normalize quotes (convert single to double)
+        .replace(/'/g, '"')
+        // Remove comments if any
+        .replace(/\/\/.*$/gm, '')
+        .replace(/\/\*[\s\S]*?\*\//g, '');
+
+      const parsed = JSON.parse(fixed);
+      if (Array.isArray(parsed)) return parsed;
+    } catch (e) {
+      // Continue to manual parsing
+    }
+
+    // Strategy 3: Manual extraction (most robust)
+    // Extract content between first [ and last ]
+    const bracketMatch = trimmed.match(/\[([\s\S]*)\]/);
+    if (bracketMatch) {
+      const content = bracketMatch[1].trim();
+
+      // Empty array
+      if (!content) return [];
+
+      // Try to parse as JSON array one more time
+      try {
+        const parsed = JSON.parse(`[${content}]`);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (e) {
+        // Fall through to string splitting
+      }
+
+      // Manual string splitting for simple arrays
+      const items: any[] = [];
+      let current = '';
+      let inString = false;
+      let escapeNext = false;
+      let depth = 0;
+
+      for (let i = 0; i < content.length; i++) {
+        const char = content[i];
+
+        if (escapeNext) {
+          current += char;
+          escapeNext = false;
+          continue;
+        }
+
+        if (char === '\\') {
+          escapeNext = true;
+          current += char;
+          continue;
+        }
+
+        if (char === '"' && depth === 0) {
+          inString = !inString;
+          current += char;
+          continue;
+        }
+
+        if (inString) {
+          current += char;
+          continue;
+        }
+
+        // Track nested structures
+        if (char === '{' || char === '[') {
+          depth++;
+          current += char;
+          continue;
+        }
+
+        if (char === '}' || char === ']') {
+          depth--;
+          current += char;
+          continue;
+        }
+
+        // Split on comma at depth 0
+        if (char === ',' && depth === 0) {
+          const item = current.trim();
+          if (item) {
+            items.push(this.parseArrayItem(item));
+          }
+          current = '';
+          continue;
+        }
+
+        current += char;
+      }
+
+      // Don't forget the last item
+      if (current.trim()) {
+        items.push(this.parseArrayItem(current.trim()));
+      }
+
+      return items;
+    }
+
+    // Strategy 4: Newline-separated values (last resort)
+    const lines = trimmed
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l && l !== '[' && l !== ']');
+
+    if (lines.length > 0) {
+      return lines.map(line => {
+        // Remove trailing comma
+        const cleaned = line.replace(/,\s*$/, '');
+        return this.parseArrayItem(cleaned);
+      });
+    }
+
+    throw new Error(`Could not parse array from: "${value.substring(0, 100)}..."`);
+  }
+
+  private parseArrayItem(item: string): any {
+    const trimmed = item.trim();
+
+    // Try JSON parse first
+    try {
+      return JSON.parse(trimmed);
+    } catch (e) {
+      // Not valid JSON, continue
+    }
+
+    // Remove quotes if present
+    if ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+        (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+      return trimmed.slice(1, -1);
+    }
+
+    // Try as number
+    if (!isNaN(Number(trimmed))) {
+      return Number(trimmed);
+    }
+
+    // Boolean
+    if (trimmed === 'true') return true;
+    if (trimmed === 'false') return false;
+    if (trimmed === 'null') return null;
+
+    // Return as string
+    return trimmed;
   }
 
   private inferAndParseValue(content: string): any {

@@ -28,4 +28,13 @@ export class Logger {
       console.log('Wizard log:', content.trim());
     }
   }
+
+  async getLog(): Promise<string> {
+    if (!this.logFilePath || !fs.existsSync(this.logFilePath)) return '';
+    try {
+      return await fs.promises.readFile(this.logFilePath, 'utf8');
+    } catch {
+      return '';
+    }
+  }
 }

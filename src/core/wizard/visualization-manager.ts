@@ -2,6 +2,7 @@ import * as http from 'http';
 import * as WebSocket from 'ws';
 import * as path from 'path';
 import * as fs from 'fs';
+import { SchemaUtils } from './schema-utils';
 
 export interface WebSocketMessage {
   type: string;
@@ -21,12 +22,46 @@ export class VisualizationManager {
 
   constructor(private wizard: any) {} // Wizard instance for callbacks
 
+  private getStepsInfo() {
+    return this.wizard.steps.map((item: any) => {
+      if (Array.isArray(item)) {
+        return item.map((step: any) => ({
+          id: step.id,
+          instruction: step.instruction,
+          fields: SchemaUtils.extractSchemaFields(step.schema),
+          status: 'pending'
+        }));
+      } else {
+        return {
+          id: item.id,
+          instruction: item.instruction,
+          fields: SchemaUtils.extractSchemaFields(item.schema),
+          status: 'pending'
+        };
+      }
+    }).flat();
+  }
+
   async visualize(port: number = 3000): Promise<{ server: http.Server; url: string }> {
     return new Promise((resolve, reject) => {
       const server = http.createServer((req, res) => {
         if (req.url === '/') {
           res.writeHead(200, { 'Content-Type': 'text/html' });
           res.end(this.getVisualizationHtml());
+        } else if (req.url === '/api/steps') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(this.getStepsInfo()));
+        } else if (req.url === '/api/context') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(this.wizard.getContext()));
+        } else if (req.url === '/api/log') {
+          this.wizard.logger.getLog().then((log: string) => {
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end(log);
+          }).catch(() => {
+            res.writeHead(200, { 'Content-Type': 'text/plain' });
+            res.end('');
+          });
         } else {
           res.writeHead(404);
           res.end('Not found');
@@ -197,10 +232,12 @@ export class VisualizationManager {
       case 'goto':
         const index = this.wizard.findStepIndex(data.stepId);
         if (index !== -1) {
-          this.wizard.currentStepIndex = index;
-          this.wizard.isRunning = true;
-          this.wizard.isPaused = false;
-          this.wizard.isStepMode = false;
+          const wasRunning = this.wizard.isRunning;
+          if (!wasRunning) {
+            this.wizard.startFrom(data.stepId);
+          } else {
+            this.wizard.currentStepIndex = index;
+          }
           console.log(`🔄 Going to step ${data.stepId}`);
           this.sendToClients({ type: 'status_update', status: { isRunning: true, isPaused: false, isStepMode: false } });
         }
@@ -245,11 +282,11 @@ export class VisualizationManager {
     this.sendToClients({ type: 'context_update', context });
   }
 
-  sendTokenUpdate(totalTokens: number, stepTokens: number): void {
+  sendTokenUpdate(totalTokens: number, rate: number): void {
     this.sendToClients({
       type: 'token_update',
       totalTokens,
-      stepTokens
+      rate
     });
   }
 

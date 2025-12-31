@@ -52,6 +52,7 @@ export class Step<T = any> {
   public readonly beforeRun?: () => Promise<void> | void;
   public readonly afterRun?: (result: T) => Promise<void> | void;
   public readonly model: string;
+  public executionCount = 0;
 
   constructor(config: StepConfig<T>) {
     this.id = config.id;
