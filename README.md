@@ -47,10 +47,10 @@ npm install @swizzy_ai/kit
 For multimodal functions and different LLM providers, set all your API keys as environment variables:
 
 ```bash
-# Required for multimodal features
-export OPENAI_API_KEY="your-openai-key"
-export ANTHROPIC_API_KEY="your-anthropic-key"
-export GEMINI_API_KEY="your-gemini-key"
+# Include multiple API keys
+OPENAI_API_KEY="your-openai-key"
+ANTHROPIC_API_KEY="your-anthropic-key"
+GEMINI_API_KEY="your-gemini-key"
 ```
 
 Or configure them programmatically:
@@ -60,13 +60,6 @@ const { Wizard, Models } = require('@swizzy_ai/kit');
 
 const wizard = new Wizard({
   id: 'my-workflow',
-  apiKeys: {
-    openai: process.env.OPENAI_API_KEY,
-    anthropic: process.env.ANTHROPIC_API_KEY,
-    gemini: process.env.GEMINI_API_KEY,
-    groq: process.env.GROQ_API_KEY,
-    together: process.env.TOGETHER_API_KEY
-  }
 });
 ```
 

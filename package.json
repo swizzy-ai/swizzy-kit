@@ -1,17 +1,19 @@
 {
   "name": "@swizzy_ai/kit",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A TypeScript library for building wizard-like workflows with LLM integration",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "rollup -c",
     "build:tsc": "tsc",
-    "clean": "rm -rf dist",
+    "clean": "if exist dist rmdir /s /q dist",
     "prepublishOnly": "npm run clean && npm run build"
   },
   "keywords": [
     "wizard",
+    "AI agents",
+    "AI sdk",
     "llm",
     "workflow",
     "typescript"
@@ -51,3 +53,5 @@
     "dist"
   ]
 }
+
+
