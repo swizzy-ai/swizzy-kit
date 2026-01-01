@@ -26,7 +26,7 @@ export type FlowControlSignal =
   | string
   | { type: 'BUNGEE_JUMP'; plan: BungeePlan };
 
-export type ContextFunction = (workflowContext: any) => any;
+export type Context = (workflowContext: any) => any;
 
 export type ContextType = 'xml' | 'template' | 'both';
 
@@ -35,7 +35,7 @@ export interface StepConfig<T = any> {
   instruction: string;
   schema: z.ZodType<T>;
   update: (result: T, workflowContext: Record<string, any>, actions: WizardActions) => Promise<FlowControlSignal>;
-  contextFunction?: ContextFunction;
+  context?: Context;
   contextType?: ContextType;
   beforeRun?: () => Promise<void> | void;
   afterRun?: (result: T) => Promise<void> | void;
@@ -47,7 +47,7 @@ export class Step<T = any> {
   public readonly instruction: string;
   public readonly schema: z.ZodType<T>;
   public readonly update: (result: T, workflowContext: Record<string, any>, actions: WizardActions) => Promise<FlowControlSignal>;
-  public readonly contextFunction?: ContextFunction;
+  public readonly context?: Context;
   public readonly contextType?: ContextType;
   public readonly beforeRun?: () => Promise<void> | void;
   public readonly afterRun?: (result: T) => Promise<void> | void;
@@ -59,7 +59,7 @@ export class Step<T = any> {
     this.instruction = config.instruction;
     this.schema = config.schema;
     this.update = config.update;
-    this.contextFunction = config.contextFunction;
+    this.context = config.context;
     this.contextType = config.contextType || 'xml'; // Default to xml
     this.beforeRun = config.beforeRun;
     this.afterRun = config.afterRun;
@@ -75,6 +75,6 @@ export class Step<T = any> {
   }
 
   getContext(workflowContext: any): any {
-    return this.contextFunction ? this.contextFunction(workflowContext) : workflowContext;
+    return this.context ? this.context(workflowContext) : workflowContext;
   }
 }

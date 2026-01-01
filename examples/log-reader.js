@@ -73,7 +73,7 @@ SEARCH_RECORD: [specific search term for log entries]
 
 If no search is needed, just provide the RESPONSE.`,
   contextType: 'template',
-  contextFunction: (context) => {
+  context: (context) => {
     const searchResults = Object.keys(context).filter(key => key.startsWith('search_result_page_')).map(key => context[key]);
     return {
       userQuestion: context.userQuestion,

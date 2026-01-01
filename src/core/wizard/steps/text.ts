@@ -1,11 +1,11 @@
 import { z } from 'zod';
-import { Step, StepConfig, ContextFunction, ContextType } from './base';
+import { Step, StepConfig, Context, ContextType } from './base';
 
 export interface TextStepConfig {
   id: string;
   instruction: string;
   update: (result: string, workflowContext: Record<string, any>, actions: import('./base').WizardActions) => Promise<import('./base').FlowControlSignal>;
-  contextFunction?: ContextFunction;
+  context?: Context;
   contextType?: ContextType;
   beforeRun?: () => Promise<void> | void;
   afterRun?: (result: string) => Promise<void> | void;

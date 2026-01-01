@@ -3,479 +3,664 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Wizard Visualizer | Production</title>
+  <title>SimEnvironment | Production v5.5</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  
   <style>
     :root {
-      --background: #000000;
-      --foreground: #ffffff;
-      --accent-primary: #e43de7;
-      --accent-primary-rgb: 228, 61, 231;
-      --accent-secondary: #00dfd8;
-      --border: #333333;
-      --surface: #111111;
-      --success: #e43de7;
-      --warning: #f5a623;
+      --bg-deep: #050505;
+      --bg-panel: #0a0a0a;
+      --border: #222;
+      
+      /* Primary Color: Electric Violet */
+      --primary: #8b5cf6; 
+      --primary-dim: rgba(139, 92, 246, 0.1);
+      
+      --success: #10b981;
+      --warning: #eab308;
+      --text-main: #e5e5e5;
+      --text-muted: #737373;
     }
 
     body {
-      background-color: var(--background);
-      color: var(--foreground);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--bg-deep);
+      color: var(--text-main);
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* --- LAYOUT GRID --- */
+    .app-grid {
+      display: grid;
+      grid-template-columns: 320px 1fr 320px; 
+      flex: 1;
+      min-height: 0; 
+      overflow: hidden;
+      width: 100%;
+      min-width: 1024px;
+    }
+
+    /* --- SIDEBARS --- */
+    .sidebar {
+      background: var(--bg-panel);
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
+      z-index: 10;
+    }
+    .sidebar-left { border-right: 1px solid var(--border); }
+    .sidebar-right { border-left: 1px solid var(--border); }
+    
+    .sidebar-header {
+      height: 50px;
+      min-height: 50px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      justify-content: space-between;
+      background: #080808;
+    }
+
+    /* --- STAGE --- */
+    .stage-container {
+      position: relative;
+      background-image: 
+        linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+      background-size: 40px 40px;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
       overflow: hidden;
     }
 
-    /* Custom Scrollbar */
-    ::-webkit-scrollbar { width: 4px; height: 4px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #333; border-radius: 10px; }
-    ::-webkit-scrollbar-thumb:hover { background: #444; }
+    .steps-scroll-area {
+      flex: 1;
+      overflow-y: auto;
+      scroll-behavior: smooth;
+      padding: 40px 0 160px 0;
+      position: relative;
+    }
+    .steps-scroll-area::-webkit-scrollbar { display: none; }
 
-    .glass-header {
-      background: rgba(0, 0, 0, 0.8);
-      backdrop-filter: blur(12px);
-      border-bottom: 1px solid var(--border);
+    .timeline-guide {
+      position: absolute;
+      left: 50%;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      background: linear-gradient(180deg, transparent, #222 10%, #222 90%, transparent);
+      z-index: 0;
+      transform: translateX(-50%);
     }
 
-    .sidebar-border { border-right: 1px solid var(--border); }
-    .right-sidebar-border { border-left: 1px solid var(--border); }
-
+    /* --- STEP CARD --- */
     .step-card {
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      width: 90%;
+      max-width: 650px;
+      margin: 0 auto 30px auto;
+      background: #080808;
       border: 1px solid var(--border);
-      background: #0a0a0a;
+      border-radius: 12px;
+      position: relative;
+      z-index: 10;
+      transition: all 0.5s cubic-bezier(0.25, 1, 0.5, 1);
+      opacity: 0.5;
+      filter: grayscale(1);
+      transform: scale(0.98);
     }
-
     .step-card.active {
-      border-color: var(--accent-primary);
-      box-shadow: 0 0 20px rgba(0, 112, 243, 0.1);
-      transform: scale(1.01);
+      opacity: 1;
+      filter: grayscale(0);
+      transform: scale(1);
+      border-color: var(--primary);
+      box-shadow: 0 0 0 1px var(--primary-dim), 0 20px 60px -10px rgba(0,0,0,0.8);
     }
-
     .step-card.completed {
-      border-color: rgba(0, 112, 243, 0.3);
+      opacity: 0.6;
+      border-color: #333;
+      filter: grayscale(0.5);
     }
 
-    .pulse {
-      animation: pulse 2s infinite;
-    }
-
-    @keyframes pulse {
-      0% { opacity: 1; }
-      50% { opacity: 0.5; }
-      100% { opacity: 1; }
-    }
-
-    .terminal-line {
-      border-left: 2px solid var(--accent-primary);
-      padding-left: 12px;
-      margin-bottom: 8px;
-      animation: slideIn 0.3s ease-out;
-    }
-
-    @keyframes slideIn {
-      from { opacity: 0; transform: translateX(-10px); }
-      to { opacity: 1; transform: translateX(0); }
-    }
-
-    .badge {
+    .step-badge {
       font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      padding: 2px 6px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      padding: 4px 8px;
       border-radius: 4px;
+      text-transform: uppercase;
+      background: #111;
+      border: 1px solid #222;
+      color: #666;
+    }
+    .active .step-badge {
+      background: var(--primary-dim);
+      color: var(--primary);
+      border-color: rgba(139, 92, 246, 0.3);
+    }
+
+    /* --- MARKDOWN & OUTPUT STYLING --- */
+    .markdown-body {
+      font-size: 13px;
+      line-height: 1.6;
+      color: #d4d4d4;
+    }
+    .markdown-body h1, .markdown-body h2, .markdown-body h3 {
+      color: #fff;
+      margin-top: 16px;
+      margin-bottom: 8px;
       font-weight: 600;
     }
-
-    .badge-blue { background: rgba(0, 112, 243, 0.1); color: #0070f3; border: 1px solid rgba(0, 112, 243, 0.2); }
-    .badge-green { background: rgba(0, 223, 216, 0.1); color: #00dfd8; border: 1px solid rgba(0, 223, 216, 0.2); }
+    .markdown-body h1 { font-size: 1.2em; border-bottom: 1px solid #333; padding-bottom: 4px; }
+    .markdown-body h2 { font-size: 1.1em; }
+    .markdown-body p { margin-bottom: 12px; }
+    .markdown-body ul, .markdown-body ol { padding-left: 20px; margin-bottom: 12px; }
+    .markdown-body li { margin-bottom: 4px; }
+    .markdown-body code {
+      font-family: 'JetBrains Mono', monospace;
+      background: rgba(255, 255, 255, 0.1);
+      padding: 2px 4px;
+      border-radius: 4px;
+      font-size: 0.9em;
+      color: #eab308;
+    }
+    .markdown-body pre {
+      background: #111;
+      padding: 12px;
+      border-radius: 6px;
+      overflow-x: auto;
+      margin-bottom: 12px;
+      border: 1px solid #222;
+    }
+    .markdown-body pre code {
+      background: transparent;
+      padding: 0;
+      color: #a5f3fc;
+      font-size: 12px;
+    }
+    .markdown-body blockquote {
+      border-left: 3px solid var(--primary);
+      padding-left: 12px;
+      color: #999;
+      font-style: italic;
+    }
     
-    .instruction-panel {
-      background: #050505;
-      font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    /* JSON Output specifically */
+    .json-output {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: #a7f3d0;
+      white-space: pre-wrap;
+      word-break: break-all;
     }
 
-    .loader {
-      width: 14px;
-      height: 14px;
-      border: 2px solid rgba(255, 255, 255, 0.1);
-      border-top-color: var(--accent-primary);
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
+    /* --- SIM INPUTS --- */
+    .sim-container {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px dashed #222;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
     }
+    .sim-group { opacity: 0; animation: fadeIn 0.3s forwards; position: relative; }
+    @keyframes fadeIn { to { opacity: 1; } }
+    .sim-label {
+      font-size: 9px;
+      text-transform: uppercase;
+      color: #555;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      margin-bottom: 4px;
+      display: block;
+    }
+    .sim-input {
+      background: #000;
+      border: 1px solid #333;
+      border-radius: 4px;
+      padding: 8px 12px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      color: var(--primary);
+      min-height: 34px;
+      display: flex;
+      align-items: center;
+      position: relative;
+    }
+    .sim-input::after { content: 'AI Generated'; position: absolute; right: 8px; font-size: 9px; color: #333; }
+    .cursor-blink { display: inline-block; width: 6px; height: 14px; background-color: var(--primary); margin-left: 2px; animation: blink 1s step-end infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
 
-    @keyframes spin {
-      to { transform: rotate(360deg); }
+    /* --- CONTROL DECK --- */
+    .control-deck {
+      position: fixed;
+      bottom: 40px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(15, 15, 15, 0.95);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      padding: 8px 16px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      z-index: 9999;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.5);
     }
+    .deck-btn { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #666; background: transparent; border: none; cursor: pointer; transition: all 0.2s; }
+    .deck-btn:hover { color: #fff; background: rgba(255,255,255,0.05); }
+    .play-btn { width: 52px; height: 52px; border-radius: 50%; background: #fff; color: #000; display: flex; align-items: center; justify-content: center; font-size: 16px; transition: transform 0.2s; border: none; cursor: pointer; }
+    .play-btn:hover { transform: scale(1.05); }
+
+    /* --- SCROLLBARS --- */
+    .custom-scroll::-webkit-scrollbar { width: 4px; }
+    .custom-scroll::-webkit-scrollbar-track { background: transparent; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
   </style>
 </head>
-<body class="h-screen flex flex-col">
 
-  <!-- Header -->
-  <header class="glass-header h-14 flex items-center justify-between px-6 z-50">
-    <div class="flex items-center gap-4">
-      <div class="flex items-center gap-2">
-        <div class="w-6 h-6 bg-white rounded flex items-center justify-center">
-          <div class="w-3 h-3 bg-black transform rotate-45"></div>
-        </div>
-        <span class="font-bold text-sm tracking-tight">WIZARD_CORE</span>
+<body>
+  <!-- HEADER -->
+  <header class="h-14 border-b border-[#222] bg-[#050505] flex items-center justify-between px-6 shrink-0 z-30 relative">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center">
+        <i class="fas fa-hat-wizard text-violet-400 text-xs"></i>
       </div>
-      <div class="h-4 w-[1px] bg-neutral-800 mx-2"></div>
-      <div class="flex gap-6 text-[11px] font-medium text-neutral-400">
-        <div class="flex flex-col">
-          <span class="text-[9px] text-neutral-600 uppercase">Tokens</span>
-          <span class="text-white" id="total-tokens">0</span>
-        </div>
-        <div class="flex flex-col">
-          <span class="text-[9px] text-neutral-600 uppercase">Rate</span>
-          <span class="text-white" id="token-rate">0/s</span>
+      <div>
+        <h1 class="text-sm font-bold text-white tracking-tight">WIZARD_CORE <span class="text-xs text-violet-500 font-mono">v5.5</span></h1>
+        <div class="flex items-center gap-2">
+          <div id="status-dot" class="w-1.5 h-1.5 rounded-full bg-neutral-600"></div>
+          <span id="header-status" class="text-[9px] font-bold text-neutral-500 uppercase tracking-widest">READY</span>
         </div>
       </div>
     </div>
-    
-    <div class="flex items-center gap-4">
-      <div id="status-badge" class="badge badge-blue flex items-center gap-2">
-        <div class="w-1.5 h-1.5 rounded-full bg-current"></div>
-        <span id="status-text">Ready</span>
+    <div class="flex items-center gap-6">
+      <div class="flex flex-col items-end">
+        <span class="text-[9px] text-neutral-600 uppercase font-bold">Tokens</span>
+        <span id="header-tokens" class="text-xs font-mono text-white">0</span>
       </div>
-      <div class="h-8 w-8 rounded-full bg-neutral-900 border border-neutral-800 flex items-center justify-center overflow-hidden">
-        <img src="/placeholder.svg?height=32&width=32" alt="user" />
+      <div class="h-6 w-[1px] bg-neutral-800"></div>
+      <div class="flex flex-col items-end">
+        <span class="text-[9px] text-neutral-600 uppercase font-bold">Rate/s</span>
+        <span id="header-rate" class="text-xs font-mono text-violet-400">0.0</span>
       </div>
     </div>
   </header>
 
-  <div class="flex-1 flex overflow-hidden">
-    <!-- Left Sidebar: Context -->
-    <aside class="w-72 sidebar-border flex flex-col bg-[#050505]">
-      <div class="p-4 border-bottom border-neutral-900 flex items-center justify-between">
-        <span class="text-[10px] uppercase font-bold text-neutral-500 tracking-widest">Context Data</span>
-        <i class="fas fa-database text-[10px] text-neutral-600"></i>
+  <!-- GRID -->
+  <div class="app-grid">
+
+    <!-- LEFT: CONTEXT -->
+    <aside class="sidebar sidebar-left">
+      <div class="sidebar-header">
+        <span class="text-[10px] font-bold uppercase tracking-widest text-neutral-400">Context Memory</span>
+        <i class="fas fa-database text-neutral-600 text-xs"></i>
       </div>
-      <div id="context-list" class="flex-1 overflow-y-auto p-4 space-y-3">
-        <!-- Context Items -->
+      <div id="context-list" class="flex-1 overflow-y-auto p-4 custom-scroll space-y-3">
+        <!-- Context injected here -->
       </div>
     </aside>
-
-    <!-- Main Content: Step Flow -->
-    <main class="flex-1 overflow-y-auto bg-black scroll-smooth">
-      <div class="max-w-3xl mx-auto py-12 px-6">
-        <div class="flex flex-col gap-8 relative" id="steps-container">
-          <!-- Timeline Line -->
-          <div class="absolute left-6 top-8 bottom-8 w-[1px] bg-neutral-800 -z-10"></div>
-          
-          <!-- Steps dynamic -->
-        </div>
+    
+    <!-- CENTER: STAGE -->
+    <main class="stage-container">
+      <div id="steps-container" class="steps-scroll-area">
+        <div class="timeline-guide"></div>
+      </div>
+      <div id="control-deck" class="control-deck">
+        <button id="stop-btn" class="deck-btn hover:text-red-500"><i class="fas fa-stop"></i></button>
+        <button id="play-pause-btn" class="play-btn shadow-lg shadow-violet-500/20 text-violet-900"><i class="fas fa-play ml-1"></i></button>
+        <button id="replay-btn" class="deck-btn"><i class="fas fa-redo"></i></button>
       </div>
     </main>
 
-    <!-- Right Sidebar: Instructions & Live Feed -->
-    <aside class="w-80 right-sidebar-border flex flex-col instruction-panel">
-      <div class="p-4 border-b border-neutral-900 flex items-center justify-between">
-        <span class="text-[10px] uppercase font-bold text-neutral-500 tracking-widest">Execution Log</span>
-        <div class="flex gap-2">
-          <div class="w-2 h-2 rounded-full bg-neutral-800"></div>
-          <div class="w-2 h-2 rounded-full bg-neutral-800"></div>
+    <!-- RIGHT: LOGS/INSTRUCT -->
+    <aside class="sidebar sidebar-right">
+      <div class="instruction-panel">
+        <div class="sidebar-header">
+          <span class="text-[10px] font-bold uppercase tracking-widest text-neutral-400">Current Instruction</span>
+          <i class="fas fa-code text-neutral-600 text-xs"></i>
+        </div>
+        <div id="current-instruction" class="instruction-content custom-scroll">
+          <p class="text-neutral-600 text-[11px]">Waiting for workflow...</p>
         </div>
       </div>
-      <div id="instruction-feed" class="flex-1 p-4 overflow-y-auto text-[12px] leading-relaxed text-neutral-300">
-        <div class="terminal-line text-neutral-500">System initialized. Waiting for command...</div>
-      </div>
-      
-      <!-- Controls -->
-      <div class="p-6 border-t border-neutral-900 bg-black">
-        <div class="flex gap-2">
-          <button id="start-btn" class="flex-1 h-10 bg-white text-black text-[12px] font-bold rounded flex items-center justify-center gap-2 hover:bg-neutral-200 transition-colors">
-            <i class="fas fa-play text-[10px]"></i> START
-          </button>
-          <button id="pause-btn" class="hidden flex-1 h-10 bg-neutral-900 text-white text-[12px] font-bold rounded border border-neutral-800 flex items-center justify-center gap-2 hover:bg-neutral-800 transition-colors">
-            <i class="fas fa-pause text-[10px]"></i> PAUSE
-          </button>
-          <button id="stop-btn" class="w-10 h-10 bg-neutral-900 text-red-500 text-[12px] rounded border border-neutral-800 flex items-center justify-center hover:bg-red-500/10 transition-colors">
-            <i class="fas fa-stop"></i>
-          </button>
-          <button id="replay-btn" class="w-10 h-10 bg-neutral-900 text-neutral-400 text-[12px] rounded border border-neutral-800 flex items-center justify-center hover:bg-neutral-800 transition-colors">
-            <i class="fas fa-redo"></i>
-          </button>
+      <div class="flex-1 flex flex-col border-t border-[#222] bg-[#030303] overflow-hidden">
+        <div class="sidebar-header">
+          <span class="text-[10px] font-bold uppercase tracking-widest text-neutral-400">System Logs</span>
+          <div class="flex gap-1"><div class="w-1.5 h-1.5 rounded-full bg-[#222]"></div><div class="w-1.5 h-1.5 rounded-full bg-[#222]"></div></div>
         </div>
+        <div id="log-feed" class="flex-1 p-3 overflow-y-auto custom-scroll flex flex-col"></div>
       </div>
     </aside>
+
   </div>
 
-  <script>
-    class WizardEngine {
-      constructor() {
-        this.ws = null;
-        this.steps = new Map();
-        this.context = new Map();
-        this.state = {
-          isRunning: false,
-          isPaused: false,
-          totalTokens: 0,
-          currentStepId: null
-        };
-        
-        this.init();
-      }
+<script>
+  class WizardEngine {
+    constructor() {
+      this.ws = null;
+      this.steps = new Map();
+      this.context = new Map();
+      this.state = { isRunning: false, isPaused: false, totalTokens: 0, currentStepId: null, tokenRate: 0 };
+      this.init();
+    }
 
-      init() {
-        this.setupWebSocket();
-        this.setupListeners();
-        this.log("Wizard Engine V4.0 ready for deployment.");
-      }
+    init() {
+      this.setupWebSocket();
+      this.setupListeners();
+      this.log("Wizard Engine V5.5 initialized.");
+    }
 
-      setupWebSocket() {
-        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${location.host}`;
-        
-        this.ws = new WebSocket(wsUrl);
-        
-        this.ws.onopen = () => {
-          this.log("Connection established with production node.");
-          this.updateConnectionUI(true);
-        };
-
-        this.ws.onmessage = (e) => {
-          const data = JSON.parse(e.data);
-          this.handleMessage(data);
-        };
-
-        this.ws.onclose = () => {
-          this.log("Connection lost. Retrying in 5s...", "error");
-          this.updateConnectionUI(false);
-          setTimeout(() => this.setupWebSocket(), 5000);
-        };
-      }
-
-      handleMessage(data) {
-        if (data.type === 'batch') {
-          data.messages.forEach(m => this.handleMessage(m));
-          return;
-        }
-
-        switch(data.type) {
-          case 'wizard_start': this.initSteps(data.steps); break;
-          case 'step_update': this.updateStep(data); break;
-          case 'token_update': this.updateTokens(data); break;
-          case 'context_update': this.updateContext(data); break;
-          case 'status_update': this.updateStatus(data.status); break;
-        }
-      }
-
-      initSteps(steps) {
-        const container = document.getElementById('steps-container');
-        container.innerHTML = '<div class="absolute left-6 top-8 bottom-8 w-[1px] bg-neutral-800 -z-10"></div>';
-        this.steps.clear();
-
-        const flatSteps = Array.isArray(steps[0]) ? steps[0] : steps;
-        
-        flatSteps.forEach(step => {
-          const el = this.createStepElement(step);
-          container.appendChild(el);
-          this.steps.set(step.id, { el, data: step });
-        });
-      }
-
-      createStepElement(step) {
-        const div = document.createElement('div');
-        div.id = `step-${step.id}`;
-        div.className = `step-card p-6 rounded-xl flex gap-6 relative transition-all duration-500 opacity-40`;
-        div.innerHTML = `
-          <div class="flex-shrink-0 w-12 h-12 rounded-full border-2 border-neutral-800 bg-black flex items-center justify-center z-10 step-icon-container">
-            <span class="text-neutral-500 font-mono text-xs">${step.id.split('-').pop() || '01'}</span>
-          </div>
-          <div class="flex-1">
-            <div class="flex items-center justify-between mb-2">
-              <h3 class="text-sm font-bold text-white">${step.id}</h3>
-              <div class="flex items-center">
-                <span class="text-[10px] text-neutral-600 font-mono uppercase status-label">Waiting</span>
-                <button class="replay-btn hidden text-neutral-500 hover:text-white text-xs ml-2" onclick="engine.sendMessage({ type: 'goto', stepId: '${step.id}' })"><i class="fas fa-redo"></i></button>
-              </div>
-            </div>
-            <p class="text-[12px] text-neutral-500 leading-relaxed mb-4">${step.instruction || 'Processing...'}</p>
-            <div class="step-content hidden border-t border-neutral-900 pt-4 mt-4">
-              <!-- Dynamic form fields -->
-            </div>
-          </div>
-        `;
-        return div;
-      }
-
-      updateStep(data) {
-        const step = this.steps.get(data.stepId);
-        if (!step) return;
-
-        const { el } = step;
-        el.className = `step-card p-6 rounded-xl flex gap-6 relative transition-all duration-500 ${data.status}`;
-
-        const iconContainer = el.querySelector('.step-icon-container');
-        const statusLabel = el.querySelector('.status-label');
-        const content = el.querySelector('.step-content');
-
-        if (data.status === 'current') {
-          el.classList.add('active', 'opacity-100');
-          iconContainer.innerHTML = '<div class="loader"></div>';
-          iconContainer.style.borderColor = 'var(--accent-primary)';
-          statusLabel.textContent = 'Running';
-          statusLabel.className = 'text-[10px] font-mono uppercase status-label pulse';
-          statusLabel.style.color = 'var(--accent-primary)';
-          el.querySelector('.replay-btn').classList.add('hidden');
-          this.log(`Executing: ${data.stepId} - ${data.instruction || 'Processing...'}`);
-
-          if (data.fields && data.fields.length > 0) {
-            this.createStepForm(content, data.stepId, data.fields);
-            content.classList.remove('hidden');
-          } else if (data.instruction) {
-             const instEl = document.createElement('div');
-             instEl.className = 'text-[11px] text-neutral-400 bg-neutral-900/50 p-3 rounded mt-2 border border-neutral-800';
-             instEl.innerHTML = marked.parse(data.instruction);
-             content.innerHTML = '';
-             content.appendChild(instEl);
-             content.classList.remove('hidden');
-           }
-
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        } else if (data.status === 'completed') {
-          el.classList.add('completed', 'opacity-100');
-          el.classList.remove('active');
-          iconContainer.innerHTML = '<i class="fas fa-check text-[12px]"></i>';
-          iconContainer.style.borderColor = 'rgba(var(--accent-primary-rgb), 0.3)';
-          iconContainer.querySelector('i').style.color = 'var(--accent-primary)';
-          statusLabel.textContent = 'Done';
-          statusLabel.className = 'text-[10px] text-neutral-500 font-mono uppercase status-label';
-          el.querySelector('.replay-btn').classList.remove('hidden');
-
-          if (data.data) {
-            const outputEl = document.createElement('div');
-            outputEl.className = 'text-[11px] text-neutral-300 bg-neutral-900/50 p-3 rounded mt-2 border border-neutral-800 font-mono relative';
-            const preEl = document.createElement('pre');
-            preEl.className = 'whitespace-pre-wrap break-words max-h-64 overflow-y-auto';
-            preEl.textContent = typeof data.data === 'string' ? data.data : JSON.stringify(data.data, null, 2);
-            const copyBtn = document.createElement('button');
-            copyBtn.className = 'absolute top-2 right-2 text-neutral-500 hover:text-white text-xs';
-            copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
-            copyBtn.onclick = () => {
-              navigator.clipboard.writeText(preEl.textContent);
-              copyBtn.innerHTML = '<i class="fas fa-check"></i>';
-              setTimeout(() => copyBtn.innerHTML = '<i class="fas fa-copy"></i>', 1000);
-            };
-            outputEl.appendChild(preEl);
-            outputEl.appendChild(copyBtn);
-            content.innerHTML = '';
-            content.appendChild(outputEl);
-            content.classList.remove('hidden');
-          }
-        }
-      }
-
-      updateContext(data) {
-        this.context.clear();
-        Object.entries(data.context).forEach(([key, value]) => {
-          this.context.set(key, value);
-        });
-
-        const list = document.getElementById('context-list');
-        list.innerHTML = '';
-
-        Object.entries(data.context).forEach(([key, value]) => {
-          const item = document.createElement('div');
-          item.className = 'p-3 bg-neutral-900 border border-neutral-800 rounded-lg group cursor-pointer hover:border-neutral-700 transition-all';
-
-          const type = Array.isArray(value) ? 'ARRAY' : typeof value;
-          const displayContent = typeof value === 'string' ? value :
-                                 Array.isArray(value) ? JSON.stringify(value, null, 2) :
-                                 JSON.stringify(value, null, 2);
-
-          item.innerHTML = `
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-[11px] font-bold text-neutral-300">${key}</span>
-              <div class="flex items-center gap-1">
-                <span class="text-[9px] text-neutral-600 uppercase font-mono">${type.toUpperCase()}</span>
-                <button class="text-neutral-500 hover:text-white text-xs copy-btn" data-key="${key}">
-                  <i class="fas fa-copy"></i>
-                </button>
-              </div>
-            </div>
-            <pre class="text-[10px] text-neutral-500 whitespace-pre-wrap break-words max-h-32 overflow-y-auto">${displayContent}</pre>
-          `;
-
-          item.querySelector('.copy-btn').onclick = (e) => {
-            e.stopPropagation();
-            const btn = e.target.closest('.copy-btn');
-            const key = btn.dataset.key;
-            const value = this.context.get(key);
-            const copyText = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-            navigator.clipboard.writeText(copyText);
-            btn.innerHTML = '<i class="fas fa-check"></i>';
-            setTimeout(() => btn.innerHTML = '<i class="fas fa-copy"></i>', 1000);
-          };
-
-          list.appendChild(item);
-        });
-      }
-
-      updateStatus(status) {
-        this.state = { ...this.state, ...status };
-        const startBtn = document.getElementById('start-btn');
-        const pauseBtn = document.getElementById('pause-btn');
-        const statusBadge = document.getElementById('status-badge');
-        const statusText = document.getElementById('status-text');
-
-        if (status.isRunning && !status.isPaused) {
-          startBtn.classList.add('hidden');
-          pauseBtn.classList.remove('hidden');
-          statusBadge.className = 'badge badge-green flex items-center gap-2';
-          statusText.textContent = 'Running';
-        } else if (status.isPaused) {
-          if (status.isStepMode) {
-            pauseBtn.innerHTML = '<i class="fas fa-step-forward text-[10px]"></i> NEXT STEP';
-            pauseBtn.onclick = () => this.sendMessage({ type: 'step_forward' });
-          } else {
-            pauseBtn.innerHTML = '<i class="fas fa-play text-[10px]"></i> RESUME';
-            pauseBtn.onclick = () => this.sendMessage({ type: 'resume' });
-          }
-          statusText.textContent = 'Paused';
-        } else {
-          startBtn.classList.remove('hidden');
-          pauseBtn.classList.add('hidden');
-        }
-      }
-
-      log(msg, type = "info") {
-        const feed = document.getElementById('instruction-feed');
-        const line = document.createElement('div');
-        line.className = `terminal-line ${type === 'error' ? 'text-red-500 border-red-500' : 'text-neutral-300'}`;
-        line.innerHTML = `<span class="text-neutral-600 mr-2">[${new Date().toLocaleTimeString([], {hour12: false})}]</span> ${msg}`;
-        feed.appendChild(line);
-        feed.scrollTop = feed.scrollHeight;
-      }
-
-      setupListeners() {
-        document.getElementById('start-btn').onclick = () => this.sendMessage({ type: 'run' });
-        document.getElementById('pause-btn').onclick = () => this.sendMessage({ type: 'pause' });
-        document.getElementById('stop-btn').onclick = () => this.sendMessage({ type: 'stop' });
-        document.getElementById('replay-btn').onclick = () => this.sendMessage({ type: 'resume' });
-      }
-
-      sendMessage(message) {
-        if (this.ws?.readyState === WebSocket.OPEN) {
-          this.ws.send(JSON.stringify(message));
-          this.log(`Manual trigger: ${message.type.toUpperCase()}`);
-        }
-      }
-
-      updateConnectionUI(connected) {
-        const badge = document.getElementById('status-badge');
-        badge.classList.toggle('opacity-50', !connected);
-      }
+    setupWebSocket() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${location.host}`;
+      this.ws = new WebSocket(wsUrl);
       
-      updateTokens(data) {
-        document.getElementById('total-tokens').textContent = data.totalTokens.toLocaleString();
+      this.ws.onopen = () => { this.log("Connected."); this.updateConnectionUI(true); };
+      this.ws.onmessage = (e) => this.handleMessage(JSON.parse(e.data));
+      this.ws.onerror = () => this.log("Connection failed.", "error");
+      this.ws.onclose = () => { 
+        this.log("Connection lost. Retrying...", "error"); 
+        this.updateConnectionUI(false); 
+        setTimeout(() => this.setupWebSocket(), 5000); 
+      };
+    }
+
+    handleMessage(data) {
+      if (data.type === 'batch') { data.messages.forEach(m => this.handleMessage(m)); return; }
+      switch(data.type) {
+        case 'wizard_start': this.initSteps(data.steps); break;
+        case 'step_update': this.updateStep(data); break;
+        case 'token_update': this.updateTokens(data); break;
+        case 'context_update': this.updateContext(data); break;
+        case 'status_update': this.updateStatus(data.status); break;
       }
     }
 
-    const engine = new WizardEngine();
-  </script>
+    initSteps(steps) {
+      const container = document.getElementById('steps-container');
+      container.innerHTML = '<div class="timeline-guide"></div><div style="height:40px"></div>';
+      this.steps.clear();
+      const flatSteps = Array.isArray(steps[0]) ? steps[0] : steps;
+      flatSteps.forEach((step, index) => {
+        const el = this.createStepElement(step, index + 1);
+        container.appendChild(el);
+        this.steps.set(step.id, { el, data: step });
+      });
+      const spacer = document.createElement('div');
+      spacer.style.height = "120px";
+      container.appendChild(spacer);
+    }
+
+    createStepElement(step, index) {
+      const div = document.createElement('div');
+      div.id = `step-${step.id}`;
+      div.className = `step-card`;
+      div.innerHTML = `
+        <div class="px-6 py-4 border-b border-[#222] bg-white/[0.02] flex items-center justify-between">
+          <div class="flex items-center gap-3">
+             <div class="text-[10px] font-mono text-neutral-500 border border-[#333] px-1.5 rounded">${index.toString().padStart(2,'0')}</div>
+             <span class="text-xs font-bold text-neutral-300 tracking-wide">${step.id}</span>
+          </div>
+          <div class="step-badge">QUEUED</div>
+        </div>
+        <div class="p-6">
+           <div class="text-sm text-neutral-500 font-medium leading-relaxed instruction-text mb-4">
+             ${step.instruction || 'Ready for processing...'}
+           </div>
+           <div class="step-content"></div>
+        </div>
+      `;
+      return div;
+    }
+
+    updateStep(data) {
+      const step = this.steps.get(data.stepId);
+      if (!step) return;
+
+      const { el } = step;
+      const badge = el.querySelector('.step-badge');
+      const content = el.querySelector('.step-content');
+
+      document.querySelectorAll('.step-card').forEach(c => c.classList.remove('active'));
+
+      if (data.status === 'current') {
+        el.classList.add('active');
+        el.classList.remove('completed');
+        badge.textContent = 'RUNNING';
+        
+        document.getElementById('current-instruction').innerHTML = `
+          <h3>${data.stepId}</h3>
+          <p>${data.instruction || 'Processing...'}</p>
+        `;
+
+        if (data.fields && data.fields.length > 0) {
+          content.innerHTML = '<div class="sim-container"></div>';
+          this.runSimulationSequence(content.querySelector('.sim-container'), data.fields);
+        }
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      } else if (data.status === 'completed') {
+        el.classList.remove('active');
+        el.classList.add('completed');
+        badge.textContent = 'DONE';
+        el.querySelectorAll('.cursor-blink').forEach(c => c.style.display = 'none');
+
+        if (data.data) {
+          let outputHtml = '';
+          let rawTextForCopy = '';
+
+          // DETERMINE FORMAT
+          if (typeof data.data === 'object') {
+            // It's an Object -> JSON Pretty Print
+            rawTextForCopy = JSON.stringify(data.data, null, 2);
+            outputHtml = `<pre class="json-output">${rawTextForCopy}</pre>`;
+          } else {
+            // It's a String
+            const strData = String(data.data).trim();
+            // Try Parsing as JSON
+            try {
+              const parsed = JSON.parse(strData);
+              rawTextForCopy = JSON.stringify(parsed, null, 2);
+              outputHtml = `<pre class="json-output">${rawTextForCopy}</pre>`;
+            } catch (e) {
+              // Not JSON -> Render as Markdown
+              rawTextForCopy = strData;
+              outputHtml = `<div class="markdown-body">${marked.parse(strData)}</div>`;
+            }
+          }
+
+          const outputWrapper = document.createElement('div');
+          outputWrapper.className = 'bg-neutral-900/50 p-4 rounded mt-4 border border-neutral-800 relative';
+          outputWrapper.innerHTML = outputHtml;
+
+          // Add Copy Button
+          const copyBtn = document.createElement('button');
+          copyBtn.className = 'absolute top-3 right-3 text-neutral-500 hover:text-white text-xs bg-[#111] p-1.5 rounded border border-[#222]';
+          copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
+          copyBtn.onclick = () => {
+            navigator.clipboard.writeText(rawTextForCopy);
+            copyBtn.innerHTML = '<i class="fas fa-check text-green-400"></i>';
+            setTimeout(() => copyBtn.innerHTML = '<i class="fas fa-copy"></i>', 1000);
+          };
+          outputWrapper.appendChild(copyBtn);
+
+          content.innerHTML = '';
+          content.appendChild(outputWrapper);
+        }
+      }
+    }
+
+    runSimulationSequence(container, fields) {
+      let delay = 0;
+      fields.forEach(field => {
+        const group = document.createElement('div');
+        group.className = 'sim-group';
+        group.style.animationDelay = `${delay}ms`;
+        
+        group.innerHTML = `
+          <span class="sim-label">${field.key}</span>
+          <div class="sim-input">
+            <span class="type-target"></span><span class="cursor-blink"></span>
+          </div>
+        `;
+        container.appendChild(group);
+
+        setTimeout(() => {
+          this.typeWriter(group.querySelector('.type-target'), field.value || "sample_data");
+        }, delay + 300);
+
+        delay += (field.value ? field.value.length * 30 : 500) + 500;
+      });
+    }
+
+    typeWriter(element, text) {
+      let i = 0;
+      const type = () => {
+        if (i < text.length) {
+          element.textContent += text.charAt(i);
+          i++;
+          setTimeout(type, 20);
+        }
+      };
+      type();
+    }
+
+    updateContext(data) {
+      this.context.clear();
+      Object.entries(data.context).forEach(([key, value]) => this.context.set(key, value));
+
+      const list = document.getElementById('context-list');
+      list.innerHTML = '';
+
+      Object.entries(data.context).forEach(([key, value]) => {
+        const item = document.createElement('div');
+        item.className = 'bg-[#0a0a0a] border border-[#222] rounded p-3 hover:border-violet-900 transition-colors group';
+
+        let typeLabel = 'OBJ';
+        let displayContent = '';
+
+        if (Array.isArray(value)) {
+            typeLabel = 'ARRAY';
+            displayContent = JSON.stringify(value, null, 2);
+        } else if (typeof value === 'object' && value !== null) {
+            typeLabel = 'JSON';
+            displayContent = JSON.stringify(value, null, 2);
+        } else {
+            typeLabel = typeof value;
+            displayContent = String(value);
+        }
+
+        item.innerHTML = `
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-[11px] font-bold text-neutral-300 font-mono">${key}</span>
+            <div class="flex items-center gap-2">
+              <span class="text-[9px] text-neutral-600 uppercase font-bold bg-[#111] px-1 rounded">${typeLabel}</span>
+              <button class="text-neutral-500 hover:text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity copy-btn">
+                <i class="fas fa-copy"></i>
+              </button>
+            </div>
+          </div>
+          <pre class="text-[10px] text-neutral-500 whitespace-pre-wrap break-all font-mono leading-relaxed max-h-40 overflow-y-auto custom-scroll">${displayContent}</pre>
+        `;
+
+        item.querySelector('.copy-btn').onclick = function() {
+           navigator.clipboard.writeText(displayContent);
+           this.innerHTML = '<i class="fas fa-check text-green-400"></i>';
+           setTimeout(() => this.innerHTML = '<i class="fas fa-copy"></i>', 1000);
+        };
+
+        list.appendChild(item);
+      });
+    }
+
+    updateStatus(status) {
+      this.state = { ...this.state, ...status };
+      const deck = document.getElementById('control-deck');
+      const headerStatus = document.getElementById('header-status');
+      const dot = document.getElementById('status-dot');
+      const playBtn = document.getElementById('play-pause-btn');
+
+      if (status.isRunning && !status.isPaused) {
+        deck.style.borderColor = 'var(--success)';
+        headerStatus.textContent = "RUNNING";
+        headerStatus.className = "text-[9px] font-bold text-green-500 uppercase tracking-widest";
+        dot.className = "w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse";
+        playBtn.innerHTML = '<i class="fas fa-pause"></i>';
+      } else if (status.isPaused) {
+        deck.style.borderColor = 'var(--warning)';
+        headerStatus.textContent = "PAUSED";
+        headerStatus.className = "text-[9px] font-bold text-yellow-500 uppercase tracking-widest";
+        dot.className = "w-1.5 h-1.5 rounded-full bg-yellow-500";
+        playBtn.innerHTML = '<i class="fas fa-play ml-1"></i>';
+      } else {
+        deck.style.borderColor = 'var(--border)';
+        headerStatus.textContent = "READY";
+        headerStatus.className = "text-[9px] font-bold text-neutral-500 uppercase tracking-widest";
+        dot.className = "w-1.5 h-1.5 rounded-full bg-neutral-600";
+        playBtn.innerHTML = '<i class="fas fa-play ml-1"></i>';
+      }
+    }
+
+    log(msg, type = "info") {
+      const feed = document.getElementById('log-feed');
+      const line = document.createElement('div');
+      line.className = 'log-line';
+      const time = new Date().toLocaleTimeString('en-GB', { hour12: false });
+      const color = type === 'error' ? 'text-red-500' : 'text-neutral-400';
+      line.innerHTML = `<span class="log-time text-[9px] font-mono opacity-50">[${time}]</span><span class="${color}">${msg}</span>`;
+      feed.appendChild(line);
+      feed.scrollTop = feed.scrollHeight;
+    }
+
+    setupListeners() {
+      document.getElementById('play-pause-btn').onclick = () => {
+        if (this.state.isRunning && !this.state.isPaused) this.sendMessage({ type: 'pause' });
+        else if (this.state.isPaused) this.sendMessage({ type: 'resume' });
+        else this.sendMessage({ type: 'run' });
+      };
+      document.getElementById('stop-btn').onclick = () => this.sendMessage({ type: 'stop' });
+      document.getElementById('replay-btn').onclick = () => this.sendMessage({ type: 'resume' });
+    }
+
+    sendMessage(message) {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify(message));
+        this.log(`Action: ${message.type.toUpperCase()}`);
+      }
+    }
+
+    updateConnectionUI(connected) {
+      const dot = document.getElementById('status-dot');
+      const headerStatus = document.getElementById('header-status');
+      if (connected) {
+        headerStatus.textContent = "READY";
+        headerStatus.className = "text-[9px] font-bold text-green-500 uppercase tracking-widest";
+        dot.className = "w-1.5 h-1.5 rounded-full bg-green-500";
+      } else {
+        headerStatus.textContent = "OFFLINE";
+        headerStatus.className = "text-[9px] font-bold text-red-500 uppercase tracking-widest";
+        dot.className = "w-1.5 h-1.5 rounded-full bg-red-500";
+      }
+    }
+    
+    updateTokens(data) {
+      this.state.totalTokens = data.totalTokens || 0;
+      this.state.tokenRate = data.rate || 0;
+      document.getElementById('header-tokens').textContent = this.state.totalTokens.toLocaleString();
+      document.getElementById('header-rate').textContent = this.state.tokenRate.toFixed(1);
+    }
+  }
+
+  const engine = new WizardEngine();
+</script>
 </body>
 </html>
