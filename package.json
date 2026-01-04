@@ -1,6 +1,6 @@
 {
   "name": "@swizzy_ai/kit",
-  "version": "1.0.1",
+  "version": "1.0.4",
   "description": "A TypeScript library for building wizard-like workflows with LLM integration",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

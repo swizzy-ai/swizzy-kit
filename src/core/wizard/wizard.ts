@@ -36,6 +36,8 @@ export interface WizardConfig {
   id: string;
   systemPrompt?: string;
   onUsage?: (usage: { promptTokens: number; completionTokens: number; totalTokens: number }, provider: string) => void;
+  maxRetries?: number;
+  logging?: boolean;
 }
 
 export interface WizardContext {
@@ -51,6 +53,12 @@ type ContextData = Record<string, any>;
 
 export class Wizard {
   private static readonly TEMPLATE_REGEX = /\{\{(\w+(?:\.\w+)*)\}\}/g;
+
+  /**
+   * Regex pattern for matching wizard-tagged XML fields during streaming parsing.
+   * Matches tags like: <fieldname tag-category="wizard" type="string">
+   * Used by createStreamingXmlParser() to identify fields to extract from LLM responses.
+   */
   private static readonly WIZARD_TAG_PATTERN = /<(\w+)\s+([^>]*tag-category=["']wizard["'][^>]*)>/gi;
 
   // Flow control signals
@@ -73,6 +81,10 @@ export class Wizard {
   private pauseResolver?: () => void;
   private userOverrideData?: any;
 
+  // Configuration
+  private maxRetries: number;
+  private isLoggingEnabled: boolean;
+
   // Managers
   private logger: Logger;
   private usageTracker: UsageTracker;
@@ -80,8 +92,6 @@ export class Wizard {
   private visualizationManager: VisualizationManager;
   private bungeeExecutor: BungeeExecutor;
   private events: EventEmitter;
-
-  private isLoggingEnabled = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
 
   private debounce(func: Function, wait: number) {
     let timeout: NodeJS.Timeout;
@@ -121,6 +131,10 @@ export class Wizard {
     const registry = new ProviderRegistry();
     this.llmClient = new LLMClient(registry);
     this.systemPrompt = config.systemPrompt;
+
+    // Initialize configuration
+    this.maxRetries = config.maxRetries ?? 3;
+    this.isLoggingEnabled = config.logging ?? (process.env.NODE_ENV === 'development' || !process.env.NODE_ENV);
 
     // Initialize managers
     this.logger = new Logger(this.id);
@@ -205,6 +219,7 @@ export class Wizard {
         this.currentStepIndex++;
         return true;
       case Wizard.STOP:
+        this.isRunning = false; // Stop the entire wizard execution
         return false;
       case Wizard.RETRY:
         return true;
@@ -231,6 +246,7 @@ export class Wizard {
   }
 
   private async initializeRun(): Promise<void> {
+    // Only wait for UI command if visualization server is actually running
     if (this.visualizationServer) {
       console.log('🎯 Waiting for UI to start wizard execution...');
       this.sendToClients({ type: 'status_update', status: { waitingForStart: true, isStepMode: false } });
@@ -489,17 +505,35 @@ export class Wizard {
     } catch (error: any) {
       console.log('Processing error', error);
 
+      const currentRetryCount = (this.workflowContext[`${step.id}_retryCount`] || 0) + 1;
+
+      // Check if we've exceeded max retries
+      if (currentRetryCount > this.maxRetries) {
+        console.log(`Step ${step.id} failed after ${this.maxRetries} retries, stopping wizard`);
+
+        // Emit step:failed event
+        this.events.emit('step:failed', {
+          stepId: step.id,
+          error: error,
+          retryCount: currentRetryCount,
+          timestamp: Date.now()
+        });
+
+        // Stop the wizard
+        return Wizard.STOP;
+      }
+
       // Emit step:error event
       this.events.emit('step:error', {
         stepId: step.id,
         error: error,
-        retryCount: (this.workflowContext[`${step.id}_retryCount`] || 0) + 1,
+        retryCount: currentRetryCount,
         timestamp: Date.now()
       });
 
       this.updateContext({
         [`${step.id}_error`]: error.message,
-        [`${step.id}_retryCount`]: (this.workflowContext[`${step.id}_retryCount`] || 0) + 1
+        [`${step.id}_retryCount`]: currentRetryCount
       });
       return 'RETRY';
     }
@@ -604,6 +638,11 @@ export class Wizard {
   }
 
 
+  /**
+   * Generates data for a wizard step by calling the LLM.
+   * Uses streaming for regular steps to provide real-time parsing and UI updates.
+   * TextStep and ComputeStep use different approaches (non-streaming).
+   */
   public async generateStepData(step: Step, stepContext: any): Promise<any> {
     const systemContext = this.systemPrompt ? `${this.systemPrompt}\n\n` : '';
     const errorContext = this.workflowContext[`${step.id}_error`] ?
@@ -631,20 +670,33 @@ Generate the text response now.`;
 
       this.log(() => `Full prompt for step ${step.id}: ${prompt}`);
 
+      let fullText = '';
       const llmResult = await this.llmClient.complete({
         prompt,
         model: step.model,
         maxTokens: 1000,
         temperature: 0.3,
+        stream: true,
+        onChunk: (chunk: string) => {
+          fullText += chunk;
+          // Emit raw chunk event for streaming text
+          this.events.emit('step:chunk', {
+            stepId: step.id,
+            chunk: chunk,
+            timestamp: Date.now()
+          });
+        },
+        onUsage: this.usageTracker.updateUsage.bind(this.usageTracker)
       });
 
-      this.log(() => `LLM response for step ${step.id}: ${llmResult.text}`);
-      console.log(`LLM response for step ${step.id}:`, llmResult.text);
+      this.log(() => `LLM response for step ${step.id}: ${fullText}`);
+      console.log(`LLM response for step ${step.id}:`, fullText);
 
-      return llmResult.text;
+      return fullText;
     }
 
-    // For regular steps, use streaming
+    // For regular steps, use streaming XML parsing
+    // This allows real-time processing of LLM responses as they arrive
     const parser = this.createStreamingXmlParser();
     let latestResult: any = {};
 
@@ -688,6 +740,8 @@ Generate the XML response now.`;
 
     this.log(() => `Full prompt for step ${step.id}: ${prompt}`);
 
+    // Initiate streaming LLM call with chunk processing
+    // Each chunk is pushed to the parser for incremental XML parsing
     const llmResult = await this.llmClient.complete({
       prompt,
       model: step.model,
@@ -695,10 +749,25 @@ Generate the XML response now.`;
       temperature: 0.3,
       stream: true,
       onChunk: (chunk: string) => {
+        // Emit raw chunk event
+        this.events.emit('step:chunk', {
+          stepId: step.id,
+          chunk: chunk,
+          timestamp: Date.now()
+        });
+
+        // Process each incoming chunk through the streaming parser
         const parseResult = parser.push(chunk);
         if (parseResult && !parseResult.done) {
           latestResult = parseResult.result;
-          // Optionally: Send partial results to UI
+          // Emit parsed streaming event
+          this.events.emit('step:streaming', {
+            stepId: step.id,
+            data: latestResult,
+            timestamp: Date.now()
+          });
+          // Stream partial results out to connected clients via WebSocket
+          // This broadcasts real-time updates to UI and external consumers
           this.visualizationManager.sendStepUpdate({
             stepId: step.id,
             status: 'streaming',
@@ -770,28 +839,42 @@ Fix the data to match the schema and generate the XML response now.`;
   }
 
 
+  /**
+   * Creates a streaming XML parser for incremental processing of LLM responses.
+   *
+   * This parser processes XML chunks as they arrive from the LLM, extracting
+   * fields marked with tag-category="wizard" and parsing them based on their type attributes.
+   *
+   * Key features:
+   * - Incremental parsing: processes data as it streams in
+   * - Buffer management: accumulates chunks until complete fields are available
+   * - Type-aware parsing: handles strings, numbers, booleans, arrays, objects
+   * - Real-time updates: returns partial results as fields complete
+   *
+   * @returns An object with a push method that accepts text chunks and returns parse results
+   */
   private createStreamingXmlParser() {
-    let buffer = '';
-    let inResponse = false;
-    const result: any = {};
-    let currentField: { name: string; type: string; content: string } | null = null;
+    let buffer = ''; // Accumulates incoming text chunks
+    let inResponse = false; // Tracks if we've entered the <response> tag
+    const result: any = {}; // The final parsed JSON object
+    let currentField: { name: string; type: string; content: string } | null = null; // Currently parsing field
 
     return {
       push: (chunk: string) => {
         buffer += chunk;
 
-        // Detect <response> start
+        // Wait for <response> tag to start parsing
         if (!inResponse && buffer.includes('<response>')) {
           inResponse = true;
-          buffer = buffer.slice(buffer.indexOf('<response>') + 10);
+          buffer = buffer.slice(buffer.indexOf('<response>') + 10); // Remove <response> from buffer
         }
 
-        if (!inResponse) return null;
+        if (!inResponse) return null; // Nothing to parse yet
 
-        // Parse wizard-tagged fields incrementally
+        // Look for wizard-tagged fields using regex pattern
         const tagMatch = buffer.match(Wizard.WIZARD_TAG_PATTERN);
         if (tagMatch) {
-          // If we have a current field, finalize it
+          // If we were parsing a field, finalize it before starting new one
           if (currentField) {
             result[currentField.name] = this.parseValueByType(
               currentField.content.trim(),
@@ -799,37 +882,43 @@ Fix the data to match the schema and generate the XML response now.`;
             );
           }
 
-          // Start new field
+          // Extract field name and type from the matched tag
           const typeMatch = tagMatch[2].match(/type=["']([^"']+)["']/);
           currentField = {
-            name: tagMatch[1],
-            type: typeMatch?.[1]?.toLowerCase() || 'string',
-            content: ''
+            name: tagMatch[1], // Field name from tag
+            type: typeMatch?.[1]?.toLowerCase() || 'string', // Type attribute, default to string
+            content: '' // Will accumulate field content
           };
 
+          // Remove the processed tag from buffer
           buffer = buffer.slice(tagMatch.index! + tagMatch[0].length);
         }
 
-        // Accumulate content for current field
+        // Accumulate content for the current field
         if (currentField) {
+          // Find the next wizard tag or end of response
           const nextTagIndex = buffer.search(/<\w+\s+[^>]*tag-category=["']wizard["']/);
           if (nextTagIndex !== -1) {
+            // Found next tag, accumulate content up to it
             currentField.content += buffer.slice(0, nextTagIndex);
             buffer = buffer.slice(nextTagIndex);
           } else if (buffer.includes('</response>')) {
+            // End of response reached, finalize current field
             const endIndex = buffer.indexOf('</response>');
             currentField.content += buffer.slice(0, endIndex);
             result[currentField.name] = this.parseValueByType(
               currentField.content.trim(),
               currentField.type
             );
-            return { done: true, result };
+            return { done: true, result }; // Parsing complete
           } else {
+            // No complete field yet, accumulate entire buffer
             currentField.content += buffer;
             buffer = '';
           }
         }
 
+        // Return partial result for UI updates
         return { done: false, result: { ...result } };
       }
     };
@@ -1183,6 +1272,14 @@ Fix the data to match the schema and generate the XML response now.`;
     });
   }
 
+  /**
+   * Starts the visualization server which enables streaming data output.
+   * Creates a WebSocket server that broadcasts real-time streaming updates
+   * to connected clients during step execution.
+   *
+   * @param port - Port number for the HTTP/WebSocket server (default: 3000)
+   * @returns Promise resolving to server and URL information
+   */
   async visualize(port: number = 3000): Promise<{ server: any; url: string }> {
     return this.visualizationManager.visualize(port);
   }
