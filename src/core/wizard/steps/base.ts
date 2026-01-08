@@ -40,6 +40,7 @@ export interface StepConfig<T = any> {
   beforeRun?: () => Promise<void> | void;
   afterRun?: (result: T) => Promise<void> | void;
   model: string;
+  stream?: boolean; // Enable/disable streaming for this step
 }
 
 export class Step<T = any> {
@@ -52,6 +53,7 @@ export class Step<T = any> {
   public readonly beforeRun?: () => Promise<void> | void;
   public readonly afterRun?: (result: T) => Promise<void> | void;
   public readonly model: string;
+  public readonly stream?: boolean;
   public executionCount = 0;
 
   constructor(config: StepConfig<T>) {
@@ -64,6 +66,7 @@ export class Step<T = any> {
     this.beforeRun = config.beforeRun;
     this.afterRun = config.afterRun;
     this.model = config.model;
+    this.stream = config.stream ?? true; // Default to streaming enabled
   }
 
   validate(data: unknown): T {

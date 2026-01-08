@@ -15,8 +15,8 @@ export class BungeeBuilder {
   /**
    * Add a single step execution.
    */
-  public readonly add = (stepId: string) => {
-    this._plan.destinations.push({ type: 'step', targetId: stepId });
+  public readonly add = (stepId: string, config?: Record<string, any>) => {
+    this._plan.destinations.push({ type: 'step', targetId: stepId, config });
     return this;
   };
 
@@ -26,22 +26,58 @@ export class BungeeBuilder {
   public readonly batch = (
     stepId: string,
     count: number,
-    configFn: (index: number) => Record<string, any>
+    configFn: (index: number) => Record<string, any>,
+    options?: {
+      optimistic?: boolean;
+      returnToAnchor?: boolean;
+      failWizardOnFailure?: boolean;
+    }
   ) => {
     for (let i = 0; i < count; i++) {
-      this._plan.destinations.push({ type: 'step', targetId: stepId });
+      this._plan.destinations.push({ type: 'step', targetId: stepId, config: configFn(i) });
     }
-    this._plan.configFn = configFn;
+    // Apply batch-specific options
+    if (options?.optimistic !== undefined) {
+      this._plan.optimistic = options.optimistic;
+    }
+    if (options?.returnToAnchor !== undefined) {
+      this._plan.returnToAnchor = options.returnToAnchor;
+    }
+    if (options?.failWizardOnFailure !== undefined) {
+      this._plan.failWizardOnFailure = options.failWizardOnFailure;
+    }
     return this;
   };
 
   /**
    * Configure execution settings.
    */
-  public readonly config = (options: { concurrency?: number }) => {
+  public readonly config = (options: {
+    concurrency?: number;
+    optimistic?: boolean;
+    returnToAnchor?: boolean;
+    failWizardOnFailure?: boolean;
+  }) => {
     if (options.concurrency !== undefined) {
       this._plan.concurrency = options.concurrency;
     }
+    if (options.optimistic !== undefined) {
+      this._plan.optimistic = options.optimistic;
+    }
+    if (options.returnToAnchor !== undefined) {
+      this._plan.returnToAnchor = options.returnToAnchor;
+    }
+    if (options.failWizardOnFailure !== undefined) {
+      this._plan.failWizardOnFailure = options.failWizardOnFailure;
+    }
+    return this;
+  };
+
+  /**
+   * Set completion callback.
+   */
+  public readonly onComplete = (callback: (wizard: any) => any) => {
+    this._plan.onComplete = callback;
     return this;
   };
 

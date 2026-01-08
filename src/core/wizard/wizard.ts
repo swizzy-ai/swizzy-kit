@@ -228,10 +228,7 @@ export class Wizard {
         this.currentStepIndex++;
         return true;
       default:
-        if (this.isBungeeJumpSignal(signal)) {
-          await this.bungeeExecutor.executeBungeePlan(signal.plan);
-          return true;
-        } else if (this.isStringSignal(signal) && signal.startsWith('GOTO ')) {
+        if (this.isStringSignal(signal) && signal.startsWith('GOTO ')) {
           const targetStepId = signal.substring(5);
           const targetIndex = this.findStepIndex(targetStepId);
           if (targetIndex !== -1) {
@@ -240,6 +237,26 @@ export class Wizard {
             throw new Error(`Unknown step ID for GOTO: ${targetStepId}`);
           }
           return true;
+        } else if (this.isBungeeJumpSignal(signal)) {
+          try {
+            const result = await this.bungeeExecutor.executeBungeePlan(signal.plan);
+            if (result) {
+              return await this.handleFlowControlSignal(result);
+            }
+            if (signal.plan.returnToAnchor === false) {
+              this.currentStepIndex++; // Proceed to next step when not returning to anchor
+            }
+            return true;
+          } catch (error: any) {
+            console.error('Bungee plan failed:', error);
+            this.workflowContext[`bungee_error`] = error.message;
+            if (signal.plan.failWizardOnFailure !== false) { // Default true
+              this.isRunning = false; // Stop the wizard on bungee failure
+              return false;
+            }
+            // If failWizardOnFailure is false, continue
+            return true;
+          }
         }
     }
     return true;
@@ -690,7 +707,7 @@ Generate the text response now.`;
       });
 
       this.log(() => `LLM response for step ${step.id}: ${fullText}`);
-      console.log(`LLM response for step ${step.id}:`, fullText);
+      // console.log(`LLM response for step ${step.id}:`, fullText);
 
       return fullText;
     }
@@ -740,14 +757,15 @@ Generate the XML response now.`;
 
     this.log(() => `Full prompt for step ${step.id}: ${prompt}`);
 
-    // Initiate streaming LLM call with chunk processing
+    // Initiate streaming LLM call with chunk processing (if enabled for this step)
     // Each chunk is pushed to the parser for incremental XML parsing
+    const useStreaming = step.stream !== false; // Default to true, can be disabled per step
     const llmResult = await this.llmClient.complete({
       prompt,
       model: step.model,
       maxTokens: 1000,
       temperature: 0.3,
-      stream: true,
+      stream: useStreaming,
       onChunk: (chunk: string) => {
         // Emit raw chunk event
         this.events.emit('step:chunk', {
@@ -840,16 +858,17 @@ Fix the data to match the schema and generate the XML response now.`;
 
 
   /**
-   * Creates a streaming XML parser for incremental processing of LLM responses.
+   * Creates an improved streaming XML parser for incremental processing of LLM responses.
    *
-   * This parser processes XML chunks as they arrive from the LLM, extracting
-   * fields marked with tag-category="wizard" and parsing them based on their type attributes.
+   * This parser is designed to handle partial chunks robustly and provides better error recovery.
+   * It processes XML chunks as they arrive, extracting fields marked with tag-category="wizard".
    *
-   * Key features:
-   * - Incremental parsing: processes data as it streams in
-   * - Buffer management: accumulates chunks until complete fields are available
-   * - Type-aware parsing: handles strings, numbers, booleans, arrays, objects
-   * - Real-time updates: returns partial results as fields complete
+   * Key improvements:
+   * - Better partial tag handling
+   * - More robust regex matching
+   * - Improved buffer management
+   * - Better error recovery for malformed chunks
+   * - State machine approach for parsing
    *
    * @returns An object with a push method that accepts text chunks and returns parse results
    */
@@ -858,68 +877,138 @@ Fix the data to match the schema and generate the XML response now.`;
     let inResponse = false; // Tracks if we've entered the <response> tag
     const result: any = {}; // The final parsed JSON object
     let currentField: { name: string; type: string; content: string } | null = null; // Currently parsing field
+    let parseErrors = 0; // Track consecutive parse errors
 
     return {
       push: (chunk: string) => {
-        buffer += chunk;
+        try {
+          buffer += chunk;
 
-        // Wait for <response> tag to start parsing
-        if (!inResponse && buffer.includes('<response>')) {
-          inResponse = true;
-          buffer = buffer.slice(buffer.indexOf('<response>') + 10); // Remove <response> from buffer
-        }
-
-        if (!inResponse) return null; // Nothing to parse yet
-
-        // Look for wizard-tagged fields using regex pattern
-        const tagMatch = buffer.match(Wizard.WIZARD_TAG_PATTERN);
-        if (tagMatch) {
-          // If we were parsing a field, finalize it before starting new one
-          if (currentField) {
-            result[currentField.name] = this.parseValueByType(
-              currentField.content.trim(),
-              currentField.type
-            );
+          // Wait for <response> tag to start parsing
+          if (!inResponse) {
+            const responseStart = buffer.indexOf('<response>');
+            if (responseStart !== -1) {
+              inResponse = true;
+              buffer = buffer.slice(responseStart + 10); // Remove <response> from buffer
+            } else {
+              return null; // Still waiting for response start
+            }
           }
 
-          // Extract field name and type from the matched tag
-          const typeMatch = tagMatch[2].match(/type=["']([^"']+)["']/);
-          currentField = {
-            name: tagMatch[1], // Field name from tag
-            type: typeMatch?.[1]?.toLowerCase() || 'string', // Type attribute, default to string
-            content: '' // Will accumulate field content
-          };
+          // Process buffer for wizard tags
+          let processedSomething = false;
 
-          // Remove the processed tag from buffer
-          buffer = buffer.slice(tagMatch.index! + tagMatch[0].length);
-        }
+          // Continue processing while we have data
+          while (buffer.length > 0) {
+            // If we have a current field, try to accumulate content
+            if (currentField) {
+              // Look for the next wizard tag or end of response
+              const nextWizardTag = buffer.match(/<\w+\s+[^>]*tag-category=["']wizard["'][^>]*>/);
+              const responseEnd = buffer.indexOf('</response>');
 
-        // Accumulate content for the current field
-        if (currentField) {
-          // Find the next wizard tag or end of response
-          const nextTagIndex = buffer.search(/<\w+\s+[^>]*tag-category=["']wizard["']/);
-          if (nextTagIndex !== -1) {
-            // Found next tag, accumulate content up to it
-            currentField.content += buffer.slice(0, nextTagIndex);
-            buffer = buffer.slice(nextTagIndex);
-          } else if (buffer.includes('</response>')) {
-            // End of response reached, finalize current field
-            const endIndex = buffer.indexOf('</response>');
-            currentField.content += buffer.slice(0, endIndex);
-            result[currentField.name] = this.parseValueByType(
-              currentField.content.trim(),
-              currentField.type
-            );
-            return { done: true, result }; // Parsing complete
-          } else {
-            // No complete field yet, accumulate entire buffer
-            currentField.content += buffer;
-            buffer = '';
+              if (nextWizardTag && nextWizardTag.index !== undefined) {
+                // Found next tag, finalize current field
+                const contentEnd = nextWizardTag.index;
+                currentField.content += buffer.slice(0, contentEnd);
+                result[currentField.name] = this.parseValueByType(
+                  currentField.content.trim(),
+                  currentField.type
+                );
+                currentField = null;
+                buffer = buffer.slice(contentEnd);
+                processedSomething = true;
+              } else if (responseEnd !== -1) {
+                // End of response, finalize current field
+                currentField.content += buffer.slice(0, responseEnd);
+                result[currentField.name] = this.parseValueByType(
+                  currentField.content.trim(),
+                  currentField.type
+                );
+                return { done: true, result }; // Parsing complete
+              } else {
+                // No complete field yet, but we might have a partial tag at the end
+                // Check if buffer ends with a partial wizard tag
+                const partialTagMatch = buffer.match(/<\w+\s+[^>]*tag-category=["']wizard["'][^>]*$/);
+                if (partialTagMatch) {
+                  // Buffer ends with partial tag, keep it for next chunk
+                  break;
+                } else {
+                  // Safe to accumulate entire buffer
+                  currentField.content += buffer;
+                  buffer = '';
+                  processedSomething = true;
+                }
+              }
+            } else {
+              // No current field, look for a new wizard tag
+              const tagMatch = buffer.match(Wizard.WIZARD_TAG_PATTERN);
+              if (tagMatch && tagMatch.index === 0) {
+                // Tag starts at beginning of buffer
+                const typeMatch = tagMatch[2].match(/type=["']([^"']+)["']/);
+                currentField = {
+                  name: tagMatch[1],
+                  type: typeMatch?.[1]?.toLowerCase() || 'string',
+                  content: ''
+                };
+                buffer = buffer.slice(tagMatch[0].length);
+                processedSomething = true;
+              } else if (tagMatch && tagMatch.index !== undefined && tagMatch.index > 0) {
+                // Tag exists but not at start - might be partial
+                const partialTagMatch = buffer.match(/<\w+\s+[^>]*tag-category=["']wizard["'][^>]*$/);
+                if (partialTagMatch) {
+                  // Buffer ends with partial tag, wait for more data
+                  break;
+                } else {
+                  // Tag is in middle, process up to it
+                  // This shouldn't happen in well-formed XML, but handle gracefully
+                  buffer = buffer.slice(tagMatch.index);
+                  continue;
+                }
+              } else {
+                // No wizard tag found
+                if (buffer.includes('</response>')) {
+                  // End of response without finalizing a field
+                  return { done: true, result };
+                }
+                // Check for partial tag at end
+                const partialTagMatch = buffer.match(/<\w+\s+[^>]*tag-category=["']wizard["'][^>]*$/);
+                if (partialTagMatch) {
+                  break; // Wait for more data
+                }
+                // No partial tag, buffer might contain non-wizard content
+                // This is unusual but we'll keep it for now
+                break;
+              }
+            }
           }
-        }
 
-        // Return partial result for UI updates
-        return { done: false, result: { ...result } };
+          // Reset error counter on successful processing
+          if (processedSomething) {
+            parseErrors = 0;
+          }
+
+          // Return partial result for UI updates
+          return { done: false, result: { ...result } };
+
+        } catch (error) {
+          parseErrors++;
+          console.warn(`Streaming XML parse error (attempt ${parseErrors}):`, error instanceof Error ? error.message : String(error));
+
+          // If we have too many consecutive errors, try to recover
+          if (parseErrors > 3) {
+            console.error('Too many parse errors, attempting recovery');
+            // Try to find next valid wizard tag and restart from there
+            const recoveryMatch = buffer.match(/<\w+\s+[^>]*tag-category=["']wizard["'][^>]*>/);
+            if (recoveryMatch && recoveryMatch.index !== undefined && recoveryMatch.index > 0) {
+              buffer = buffer.slice(recoveryMatch.index);
+              parseErrors = 0; // Reset error counter
+              return { done: false, result: { ...result } };
+            }
+          }
+
+          // Return current result even with errors
+          return { done: false, result: { ...result } };
+        }
       }
     };
   }

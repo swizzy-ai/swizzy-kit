@@ -12,7 +12,7 @@ export class BungeeExecutor {
 
   constructor(private wizard: any) {} // Wizard instance
 
-  async executeBungeePlan(plan: BungeePlan): Promise<void> {
+  async executeBungeePlan(plan: BungeePlan): Promise<any> {
     console.log(`🪂 Executing Bungee plan ${plan.id} with ${plan.destinations.length} destinations`);
 
     // Track active workers for this plan
@@ -35,15 +35,33 @@ export class BungeeExecutor {
       }
     }
 
-    // Wait for all workers to complete
-    await Promise.all(activeWorkers);
+    // Wait for all workers to complete unless optimistic
+    if (!plan.optimistic) {
+      try {
+        await Promise.all(activeWorkers);
+      } catch (error: any) {
+        if (plan.failWizardOnFailure !== false) { // Default true
+          throw error; // Re-throw to stop wizard
+        }
+        // If failWizardOnFailure is false, just log and continue
+        console.error(`Bungee plan ${plan.id} had failures but continuing:`, error);
+      }
+    }
 
-    console.log(`✅ Bungee plan ${plan.id} completed, returning to anchor ${plan.anchorId}`);
+    if (plan.onComplete) {
+      return plan.onComplete(this.wizard);
+    }
+
+    if (plan.returnToAnchor !== false) { // Default true
+      console.log(`✅ Bungee plan ${plan.id} completed, returning to anchor ${plan.anchorId}`);
+    } else {
+      console.log(`✅ Bungee plan ${plan.id} completed, proceeding to next step`);
+    }
   }
 
   private async launchBungeeWorker(plan: BungeePlan, index: number): Promise<void> {
     const destination = plan.destinations[index];
-    const telescope = plan.configFn ? plan.configFn(index) : {};
+    const telescope = destination.config || {};
     const workerId = `${plan.id}_${destination.targetId}_${index}_${Date.now()}`;
     const telescopeContext = this.createTelescopeContext(this.wizard.workflowContext, telescope);
 
@@ -62,9 +80,6 @@ export class BungeeExecutor {
 
     try {
       await promise;
-    } catch (error: any) {
-      console.error(`Bungee worker ${workerId} failed:`, error);
-      this.wizard.workflowContext[`${workerId}_error`] = error.message;
     } finally {
       // Clean up
       const planWorkers = this.bungeeWorkers.get(plan.id);
@@ -72,8 +87,10 @@ export class BungeeExecutor {
         planWorkers.delete(workerId);
         if (planWorkers.size === 0) {
           this.bungeeWorkers.delete(plan.id);
-          // Trigger reentry to anchor
-          this.pendingReentry.add(plan.anchorId);
+          // Trigger reentry to anchor if configured
+          if (plan.returnToAnchor !== false) {
+            this.pendingReentry.add(plan.anchorId);
+          }
         }
       }
     }
@@ -100,9 +117,7 @@ export class BungeeExecutor {
   }
 
   mergeWorkerResults(updates: Record<string, any>, telescope: Record<string, any>): void {
-    Object.entries(updates).forEach(([key, value]) => {
-      this.wizard.workflowContext[key] = value;
-    });
+    this.wizard.updateContext(updates);
   }
 
   private async retriggerAnchor(anchorId: string): Promise<void> {
