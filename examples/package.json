@@ -13,8 +13,10 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@swizzy_ai/kit": "^1.0.0",
     "@swizzy/kit": "file:..",
-    "dotenv": "^17.2.3"
+    "@swizzy_ai/kit": "^1.0.0",
+    "dotenv": "^17.2.3",
+    "puppeteer": "^24.35.0",
+    "zod": "^3.22.4"
   }
 }

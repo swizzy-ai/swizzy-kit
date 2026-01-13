@@ -15,7 +15,7 @@ export class SchemaUtils {
       const fields = Object.entries(shape).map(([key, fieldSchema]: [string, any]) => {
         const type = this.getSchemaType(fieldSchema);
         const xmlExample = this.getXmlExample(key, type);
-        return `${key}: ${type} - ${xmlExample}`;
+        return `${key}: ${type}`;
       });
       description = `Object with fields:\n${fields.join('\n')}`;
     } else {
@@ -62,8 +62,8 @@ export class SchemaUtils {
 
   static getXmlExample(key: string, type: string): string {
     switch (type) {
-      case 'string': return `<${key} tag-category="wizard" type="string">example`;
-      case 'number': return `<${key} tag-category="wizard" type="number">123`;
+      case 'string': return `<${key} tag-category="wizard" type="string">[your text should be here]`;
+      case 'number': return `<${key} tag-category="wizard" type="number">[number should be here]`;
       case 'boolean': return `<${key} tag-category="wizard" type="boolean">true`;
       case 'array': return `<${key} tag-category="wizard" type="array">["item1", "item2"]`;
       default:
@@ -71,7 +71,7 @@ export class SchemaUtils {
           const values = type.split(': ')[1].split(', ');
           return `<${key} tag-category="wizard" type="string">${values[0]}`;
         }
-        return `<${key} tag-category="wizard" type="object"><subfield type="string">value</subfield>`;
+        return `<${key} tag-category="wizard" type="object"><subfield type="string">[text value should be here]</subfield>`;
     }
   }
 

@@ -10,6 +10,7 @@ export interface TextStepConfig {
   beforeRun?: () => Promise<void> | void;
   afterRun?: (result: string) => Promise<void> | void;
   model: string;
+  stream: boolean
 }
 
 export class TextStep extends Step<string> {

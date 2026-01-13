@@ -26,7 +26,7 @@ export type FlowControlSignal =
   | string
   | { type: 'BUNGEE_JUMP'; plan: BungeePlan };
 
-export type Context = (workflowContext: any) => any;
+export type Context = (workflowContext: any) => any | Promise<any>;
 
 export type ContextType = 'xml' | 'template' | 'both';
 
@@ -77,7 +77,7 @@ export class Step<T = any> {
     return result.data;
   }
 
-  getContext(workflowContext: any): any {
-    return this.context ? this.context(workflowContext) : workflowContext;
+  async getContext(workflowContext: any): Promise<any> {
+    return this.context ? await this.context(workflowContext) : workflowContext;
   }
 }

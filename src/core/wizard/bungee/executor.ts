@@ -22,17 +22,6 @@ export class BungeeExecutor {
       // Launch worker
       const workerPromise = this.launchBungeeWorker(plan, i);
       activeWorkers.add(workerPromise);
-
-      // Respect concurrency limit
-      if (activeWorkers.size >= plan.concurrency) {
-        await Promise.race(activeWorkers);
-        // Clean up completed workers
-        for (const promise of activeWorkers) {
-          if (promise !== workerPromise) {
-            activeWorkers.delete(promise);
-          }
-        }
-      }
     }
 
     // Wait for all workers to complete unless optimistic

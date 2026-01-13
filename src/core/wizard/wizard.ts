@@ -115,7 +115,7 @@ export class Wizard {
   }
 
   private get log(): (message: string | (() => string)) => void {
-    return this.isLoggingEnabled ? this.logger.log.bind(this.logger) : () => {};
+    return this.isLoggingEnabled ? this.logger.log.bind(this.logger) : () => { };
   }
 
   private get sendToClients(): (message: any) => void {
@@ -438,7 +438,7 @@ export class Wizard {
       timestamp: stepStartTime
     });
 
-    const stepContext = step.getContext(this.contextManager.getContext());
+    const stepContext = await step.getContext(this.contextManager.getContext());
     let processedInstruction = step.instruction;
     if (step.contextType === 'template' || step.contextType === 'both') {
       processedInstruction = this.applyTemplate(step.instruction, stepContext);
@@ -660,137 +660,109 @@ export class Wizard {
    * Uses streaming for regular steps to provide real-time parsing and UI updates.
    * TextStep and ComputeStep use different approaches (non-streaming).
    */
+  /**
+    * Generates data for a wizard step by calling the LLM.
+    * CLEANED VERSION: Separates formatting rules from logic to prevent hallucination.
+    */
   public async generateStepData(step: Step, stepContext: any): Promise<any> {
     const systemContext = this.systemPrompt ? `${this.systemPrompt}\n\n` : '';
+
+    // Build context strings
     const errorContext = this.workflowContext[`${step.id}_error`] ?
-      `\n\nPREVIOUS ERROR (attempt ${this.workflowContext[`${step.id}_retryCount`] || 1}):\n${this.workflowContext[`${step.id}_error`]}\nPlease fix this.` : '';
+      `\n\n!!! PREVIOUS ERROR (Attempt ${this.workflowContext[`${step.id}_retryCount`] || 1}) !!!\nThe previous output caused this error: ${this.workflowContext[`${step.id}_error`]}\nYOU MUST FIX THIS.` : '';
 
     let processedInstruction = step.instruction;
     if (step.contextType === 'template' || step.contextType === 'both') {
       processedInstruction = this.applyTemplate(step.instruction, stepContext);
     }
-    this.log(() => `Processed instruction for step ${step.id}: ${processedInstruction}`);
 
     let contextSection = '';
     if (step.contextType === 'xml' || step.contextType === 'both' || !step.contextType) {
-      contextSection = `\n\nSTEP CONTEXT:\n${this.objectToXml(stepContext)}`;
+      contextSection = `\n\n### CURRENT CONTEXT ###\n${this.objectToXml(stepContext)}`;
     }
-    this.log(() => `Context section for step ${step.id}: ${contextSection}`);
 
+    // --- Text Step Handling ---
     if (step instanceof TextStep) {
-      const prompt = `${systemContext}You are executing a wizard step. Generate text for this step.
+      const prompt = `${systemContext}
+TASK: Generate content for step "${step.id}".
 
-STEP: ${step.id}
-INSTRUCTION: ${processedInstruction}${errorContext}${contextSection}
+INSTRUCTION:
+${processedInstruction}
+${contextSection}
+${errorContext}
 
+OUTPUT:
 Generate the text response now.`;
 
-      this.log(() => `Full prompt for step ${step.id}: ${prompt}`);
-
       let fullText = '';
-      const llmResult = await this.llmClient.complete({
+
+      console.log("full prompt", prompt)
+       const result  = await this.llmClient.complete({
         prompt,
         model: step.model,
         maxTokens: 1000,
         temperature: 0.3,
-        stream: true,
+        stream: step.stream,
         onChunk: (chunk: string) => {
           fullText += chunk;
-          // Emit raw chunk event for streaming text
-          this.events.emit('step:chunk', {
-            stepId: step.id,
-            chunk: chunk,
-            timestamp: Date.now()
-          });
+          this.events.emit('step:chunk', { stepId: step.id, chunk, timestamp: Date.now() });
         },
         onUsage: this.usageTracker.updateUsage.bind(this.usageTracker)
       });
-
-      this.log(() => `LLM response for step ${step.id}: ${fullText}`);
-      // console.log(`LLM response for step ${step.id}:`, fullText);
-
+      if(result.text){
+        fullText = result.text
+      }
       return fullText;
     }
 
-    // For regular steps, use streaming XML parsing
-    // This allows real-time processing of LLM responses as they arrive
+    // --- Regular XML Step Handling ---
     const parser = this.createStreamingXmlParser();
     let latestResult: any = {};
-
     const schemaDescription = SchemaUtils.describeSchema(step.schema, step.id);
-    const prompt = `${systemContext}You are executing a wizard step. Generate data for this step.
 
-STEP: ${step.id}
-INSTRUCTION: ${processedInstruction}${errorContext}${contextSection}
+    // CLEANER PROMPT STRUCTURE
+    const prompt = `${systemContext}
+=== GOAL ===
+You are an intelligent agent executing step: "${step.id}".
+Your task is to generate data that satisfies the INSTRUCTION below based on the CONTEXT.
 
-SCHEMA REQUIREMENTS:
+=== INSTRUCTION ===
+${processedInstruction}
+${contextSection}
+${errorContext}
+
+=== RESPONSE FORMAT ===
+You must output a VALID XML object inside a <response> tag.
+1. Every field must have: tag-category="wizard" and a type attribute (string, number, boolean, array).
+2. Arrays must be single-line JSON: <tags tag-category="wizard" type="array">["a", "b"]
+
+=== SCHEMA DEFINITION ===
 ${schemaDescription}
 
-REQUIRED OUTPUT FORMAT:
-Return a plain XML response with a root <response> tag.
-CRITICAL: Every field MUST include tag-category="wizard" attribute. This is MANDATORY.
-Every field MUST also include a type attribute (e.g., type="string", type="number", type="boolean", type="array").
+*** CRITICAL RULES ***
+1. Do NOT copy values from the schema definition or examples above.
+2. Generate NEW values based strictly on the "INSTRUCTION" and "CURRENT CONTEXT".
+3. If the instruction implies a selection (like an ID), ensure the ID exists in the Context.
 
-ARRAY FORMATTING RULES (CRITICAL):
-- Arrays MUST be valid JSON on a SINGLE line
-- Use double quotes, not single quotes: ["a", "b"] NOT ['a', 'b']
-- NO trailing commas: ["a", "b"] NOT ["a", "b",]
-- NO line breaks inside arrays
-- Example: <items tag-category="wizard" type="array">["apple", "banana", "orange"]
+Generate the XML <response> now.`;
 
-IMPORTANT PARSING RULES:
-- Fields with tag-category="wizard" do NOT need closing tags
-- Content ends when the next tag with tag-category="wizard" begins, OR when </response> is reached
-- This means you can include ANY content (including code with <>, XML snippets, etc.) without worrying about breaking the parser
-- Only fields marked with tag-category="wizard" will be parsed
+    // console.log(prompt); // Uncomment to debug the cleaner prompt
 
-Example:
-<response>
-  <name tag-category="wizard" type="string">John Smith
-  <age tag-category="wizard" type="number">25
-  <tags tag-category="wizard" type="array">["a", "b", "c"]
-</response>
+    const useStreaming = step.stream !== false;
 
-Notice: Arrays are compact JSON on one line! No closing tags needed for wizard fields.
-
-Generate the XML response now.`;
-
-    this.log(() => `Full prompt for step ${step.id}: ${prompt}`);
-
-    // Initiate streaming LLM call with chunk processing (if enabled for this step)
-    // Each chunk is pushed to the parser for incremental XML parsing
-    const useStreaming = step.stream !== false; // Default to true, can be disabled per step
-    const llmResult = await this.llmClient.complete({
+    const result =  await this.llmClient.complete({
       prompt,
       model: step.model,
       maxTokens: 1000,
-      temperature: 0.3,
-      stream: useStreaming,
+      temperature: 0.3, // Lower temp for precision
+      stream: step.stream,
       onChunk: (chunk: string) => {
-        // Emit raw chunk event
-        this.events.emit('step:chunk', {
-          stepId: step.id,
-          chunk: chunk,
-          timestamp: Date.now()
-        });
-
-        // Process each incoming chunk through the streaming parser
+        this.events.emit('step:chunk', { stepId: step.id, chunk, timestamp: Date.now() });
         const parseResult = parser.push(chunk);
         if (parseResult && !parseResult.done) {
           latestResult = parseResult.result;
-          // Emit parsed streaming event
-          this.events.emit('step:streaming', {
-            stepId: step.id,
-            data: latestResult,
-            timestamp: Date.now()
-          });
-          // Stream partial results out to connected clients via WebSocket
-          // This broadcasts real-time updates to UI and external consumers
-          this.visualizationManager.sendStepUpdate({
-            stepId: step.id,
-            status: 'streaming',
-            data: latestResult
-          });
+          this.events.emit('step:streaming', { stepId: step.id, data: latestResult, timestamp: Date.now() });
+          this.visualizationManager.sendStepUpdate({ stepId: step.id, status: 'streaming', data: latestResult });
         } else if (parseResult?.done) {
           latestResult = parseResult.result;
         }
@@ -798,19 +770,18 @@ Generate the XML response now.`;
       onUsage: this.usageTracker.updateUsage.bind(this.usageTracker)
     });
 
-    this.log(() => `Final parsed data: ${JSON.stringify(latestResult)}`);
+    if(result.text){
+      latestResult = result.text
+    }
 
-    this.log(() => `Parsed JSON data for step ${step.id}: ${JSON.stringify(latestResult)}`);
     try {
       return step.validate(latestResult);
     } catch (validationError: any) {
-      this.log(() => `Validation failed for step ${step.id}: ${validationError.message}`);
+      // Logic for repair remains the same...
       try {
         const repairedData = await this.repairSchemaData(latestResult, step.schema, validationError.message, step.id);
-        this.log(() => `Repaired data for step ${step.id}: ${JSON.stringify(repairedData)}`);
         return step.validate(repairedData);
       } catch (repairError: any) {
-        this.log(() => `Repair failed for step ${step.id}: ${repairError.message}`);
         return { __validationFailed: true, error: validationError.message };
       }
     }
@@ -1270,7 +1241,7 @@ Fix the data to match the schema and generate the XML response now.`;
 
     // Remove quotes if present
     if ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-        (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+      (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
       return trimmed.slice(1, -1);
     }
 

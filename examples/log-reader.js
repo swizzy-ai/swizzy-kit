@@ -168,10 +168,9 @@ async function runLogReader() {
       logPages: logPages
     });
 
-    console.log('📋 System Log Reader');
-    console.log('====================');
-    console.log(`Log split into ${logPages.length} pages for parallel search`);
 
+
+    console.log("try again ====>",)
     // Run the wizard
     await wizard.run();
 
