@@ -3,6 +3,44 @@ const { Wizard, Models } = require('@swizzy/kit');
 const { z } = require('zod');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
+const http = require('http');
+
+async function postDataToBackend(data) {
+  return new Promise((resolve, reject) => {
+    const postData = JSON.stringify({
+      teamId: "arsenal",
+      season: "2024-25",
+      data: data
+    });
+    const options = {
+      hostname: '127.0.0.1',
+      port: 8787,
+      path: '/data/stats',
+      method: 'POST',
+      headers: {
+        'X-API-Key': '7383f34ef9afe72be95cfab5c12e9a2950d2313214a4c9bd625b90297cabf86a',
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData)
+      }
+    };
+    const req = http.request(options, (res) => {
+      let body = '';
+      res.on('data', (chunk) => {
+        body += chunk;
+      });
+      res.on('end', () => {
+        console.log(`POST Response: ${res.statusCode} ${body}`);
+        resolve();
+      });
+    });
+    req.on('error', (e) => {
+      console.error('POST Error:', e);
+      reject(e);
+    });
+    req.write(postData);
+    req.end();
+  });
+}
 
 const wizard = new Wizard({ id: 'simple-scraper' });
 let browser, page;
@@ -55,12 +93,45 @@ wizard.addComputeStep({
     });
 
     context.tableList = tables.join('\n');
-    return actions.goto('pick_tables');
+    return actions.goto('decide_mode');
   }
 });
 
 // ============================================================================
-// STEP 2: LLM DECISION (The "Brain")
+// STEP 2: DECIDE EXTRACTION MODE
+// ============================================================================
+wizard.addStep({
+  id: 'decide_mode',
+  model: Models.SWIZZY_DEFAULT,
+  instruction: `
+    GOAL: {{goal}}
+
+    Decide the extraction mode based on the goal.
+    - If the goal requires extracting all tables or mentions "all", choose 'all'.
+    - Otherwise, choose 'pick' to select specific tables.
+  `,
+  schema: z.object({
+    mode: z.enum(['pick', 'all']).describe("Extraction mode: 'pick' for specific tables, 'all' for all tables")
+  }),
+  contextType: "template",
+  context: async (context) => ({ goal: context.goal }),
+  update: async (data, context, actions) => {
+    if (data.mode === 'pick') {
+      return actions.goto('pick_tables');
+    } else {
+      // Extract all table selectors
+      const allSelectors = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll('table')).map(t => `#${t.id}`).filter(id => id !== '#');
+      });
+      context.targets = allSelectors;
+      console.log(`🎯 Extracting all tables: ${allSelectors.join(', ')}`);
+      return actions.goto('extract');
+    }
+  }
+});
+
+// ============================================================================
+// STEP 3: LLM DECISION (The "Brain")
 // ============================================================================
 // SUPER SIMPLE SCHEMA: Just an array of strings.
 wizard.addStep({
@@ -123,10 +194,45 @@ wizard.addComputeStep({
         return results;
     }, context.targets);
 
+    context.extractedData = data;
+
     // Save
     fs.writeFileSync('scraped_data.json', JSON.stringify(data, null, 2));
     console.log("✅ Data Saved to scraped_data.json");
-    
+
+    // Post to backend
+    try {
+      await postDataToBackend(data);
+      console.log("✅ Data posted to backend");
+    } catch (error) {
+      console.error("❌ Failed to post data:", error);
+    }
+
+    return actions.goto('generate_report');
+  }
+});
+
+// ============================================================================
+// STEP 4: GENERATE TEXT REPORT
+// ============================================================================
+wizard.addStep({
+  id: 'generate_report',
+  model: Models.SWIZZY_DEFAULT,
+  instruction: `
+    Based on the extracted data from the tables, generate a comprehensive textual summary report.
+
+    Summarize key information, statistics, and insights from the data.
+    Present it in a readable text format.
+  `,
+  schema: z.object({
+    report: z.string().describe("Textual summary report of the extracted data")
+  }),
+  contextType: "template",
+  context: async (context) => ({ data: JSON.stringify(context.extractedData) }),
+  update: async (data, context, actions) => {
+    fs.writeFileSync('report.txt', data.report);
+    console.log("✅ Text report saved to report.txt");
+
     await browser.close();
     return actions.stop();
   }
@@ -134,7 +240,7 @@ wizard.addComputeStep({
 
 // RUN
 wizard.setContext({
-    url: 'https://fbref.com/en/squads/18bb7c10/Arsenal-Stats',
-    goal: 'Get ALL TABLES related to arsenal and the players all tables should be extracted'
+    url: 'https://fbref.com/en/comps/9/Premier-League-Stats',
+    goal: 'Get ALL TABLES related to the premier league ensuere the club id is included'
 });
 wizard.run();
