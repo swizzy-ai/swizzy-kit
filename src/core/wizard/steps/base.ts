@@ -5,6 +5,7 @@ import { BungeeBuilder } from '../bungee/builder';
 
 export interface WizardActions {
   updateContext: (updates: Record<string, any>) => void;
+  setState: (updates: Partial<any> | ((prevState: any) => Partial<any>)) => void;
   llmClient: LLMClient;
   goto: (stepId: string) => FlowControlSignal;
   next: () => FlowControlSignal;

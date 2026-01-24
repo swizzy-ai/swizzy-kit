@@ -84,14 +84,17 @@ The LLM never decides where to go or what to do - it only generates text based o
 
 ---
 
-### Context and State Management
+### State and Context Management
 
-**Context** is the shared state that flows through your entire workflow. Every step can read from it and write to it.
+Wizard uses two complementary concepts for data management:
 
-#### Setting Initial Context
+#### State: The Global Data Store
+
+**State** is the persistent, shared data that flows through your entire workflow. It's the "source of truth" that all steps can read from and write to.
 
 ```javascript
-wizard.setContext({
+// Set initial state
+wizard.setState({
   userQuestion: 'What are the key findings?',
   documents: [
     { title: 'Q1 Report', pages: 45, data: [...] },
@@ -99,69 +102,68 @@ wizard.setContext({
   ],
   processedCount: 0
 });
-```
 
-#### Reading Context
-
-Context is available in every `update` function and `context`:
-
-```javascript
+// State is available in every update function
 wizard.addComputeStep({
   id: 'check_status',
-  update: (result, context, actions) => {
-    // Access any context property
-    console.log(`Processed ${context.processedCount} documents`);
+  update: (result, state, actions) => {
+    console.log(`Processed ${state.processedCount} documents`);
     return actions.next();
   }
 });
-```
 
-#### Updating Context
-
-```javascript
+// Update state (supports both object and functional updates)
 wizard.addComputeStep({
   id: 'increment_counter',
-  update: (result, context, actions) => {
-    actions.updateContext({
-      processedCount: context.processedCount + 1
-    });
+  update: (result, state, actions) => {
+    actions.setState({ processedCount: state.processedCount + 1 });
+    // Or using functional updates:
+    // actions.setState(prevState => ({ processedCount: prevState.processedCount + 1 }));
     return actions.next();
   }
 });
 ```
 
-#### Context Functions: Controlling What the LLM Sees
+#### Context: What the LLM Sees
 
-The `context` transforms your full context into a focused view for the LLM. This is where you design the information architecture.
+**Context** is a function that transforms your global state into a focused, LLM-friendly view. This is where you design the information architecture for each step.
+
+The context function receives the full state and returns only what the LLM should see for that specific step.
 
 ```javascript
 wizard.addTextStep({
   id: 'analyze',
   instruction: 'Analyze these documents:\n{{formattedDocs}}',
-  context: (context) => ({
-    // Transform complex data into LLM-friendly format
-    formattedDocs: context.documents
+  context: (state) => ({
+    // Transform global state into LLM-friendly format
+    formattedDocs: state.documents
       .map((doc, i) => `${i + 1}. ${doc.title} (${doc.pages} pages)`)
       .join('\n'),
-    // Only expose what's needed
-    totalDocs: context.documents.length
+    // Only expose what's needed for this step
+    totalDocs: state.documents.length
   }),
   schema: z.object({
     insights: z.array(z.string())
   }),
   model: Models.SWIZZY_DEFAULT,
-  update: (result, context, actions) => {
-    actions.updateContext({ insights: result.insights });
+  update: (result, state, actions) => {
+    actions.setState({ insights: result.insights });
     return actions.next();
   }
 });
 ```
 
-**Why This Matters**: 
-- Keep token usage low by showing only relevant data
-- Present information in the optimal format
-- Prevent the LLM from seeing sensitive or confusing data
-- Design the exact "user interface" the LLM experiences
+**Why Context Functions Matter**:
+- **Token Efficiency**: Show only relevant data to stay within LLM limits
+- **Information Architecture**: Present data in the optimal format for the task
+- **Security**: Prevent LLMs from seeing sensitive or distracting information
+- **UX Design**: Craft the exact "interface" each LLM step experiences
+
+**Key Distinction**:
+- **State** = Global data store (persistent, shared, updatable)
+- **Context** = Per-step data transformation (temporary, focused, read-only for LLM)
+
+**Migration Note**: `updateContext()`, `setContext()`, and `getContext()` are still supported for backward compatibility, but `setState()` and `getState()` are the preferred modern APIs. `setState()` supports both object and functional updates.
 
 ---
 
@@ -199,7 +201,7 @@ wizard.addStep({
   model: Models.SWIZZY_DEFAULT,
   update: (result, context, actions) => {
     // result is guaranteed to match schema
-    actions.updateContext({ entities: result });
+    actions.setState({ entities: result });
     return actions.next();
   }
 });
@@ -214,8 +216,8 @@ wizard.addTextStep({
   id: 'summarize',
   instruction: 'Summarize: {{document}}',
   model: Models.SWIZZY_DEFAULT,
-  update: (text, context, actions) => {
-    actions.updateContext({ summary: text });
+  update: (text, state, actions) => {
+    actions.setState({ summary: text });
     return actions.next();
   }
 });
@@ -662,7 +664,7 @@ graph TD
 #### Basic Bungee Example
 
 ```javascript
-wizard.setContext({
+wizard.setState({
   documents: ['doc1.txt', 'doc2.txt', 'doc3.txt']
 });
 
@@ -727,7 +729,7 @@ wizard.addComputeStep({
 Search 100 pages simultaneously instead of sequentially:
 
 ```javascript
-wizard.setContext({
+wizard.setState({
   userQuestion: 'What are the key findings about climate change?',
   totalPages: 100
 });
@@ -888,8 +890,8 @@ const wizard = new Wizard({
   }
 });
 
-// Initialize context
-wizard.setContext({
+// Initialize state
+wizard.setState({
   documentText: 'Your document content here...',
   userQuery: 'Extract key insights',
   maxRetries: 3
@@ -980,6 +982,89 @@ wizard.run();
 
 ---
 
+## Events
+
+Wizard emits events throughout execution for monitoring and integration. Listen using `wizard.on(eventName, callback)`.
+
+### State Events
+
+| Event | Description | Data Structure |
+|-------|-------------|----------------|
+| `state:update` | Fired when state is modified | `{ previousState, newState, updates, timestamp }` |
+
+**Example:**
+```javascript
+wizard.on('state:update', (data) => {
+  console.log('State changed:', data.updates);
+  console.log('New state:', data.newState);
+});
+```
+
+### Wizard Lifecycle Events
+
+| Event | Description | Data Structure |
+|-------|-------------|----------------|
+| `start` | Wizard execution begins | `{ wizardId, timestamp, steps }` |
+| `complete` | Wizard execution finishes successfully | `{ duration, totalSteps, timestamp }` |
+| `wizard:stop` | Wizard execution stops (completion or manual) | `{ reason, finalState, timestamp }` |
+| `pause` | Wizard execution is paused | `{ timestamp, currentStepId }` |
+| `resume` | Wizard execution resumes | `{ timestamp, currentStepId }` |
+
+### Step Events
+
+| Event | Description | Data Structure |
+|-------|-------------|----------------|
+| `step:start` | Step begins execution | `{ stepId, instruction, timestamp }` |
+| `step:complete` | Step finishes successfully | `{ stepId, data, duration, timestamp }` |
+| `step:failed` | Step fails permanently | `{ stepId, error, retryCount, timestamp }` |
+| `step:error` | Step encounters error (may retry) | `{ stepId, error, retryCount, timestamp }` |
+| `step:retry` | Step is being retried | `{ stepId, attempt, error, timestamp }` |
+
+### Streaming Events
+
+| Event | Description | Data Structure |
+|-------|-------------|----------------|
+| `step:chunk` | Raw text chunk during streaming | `{ stepId, chunk, timestamp }` |
+| `step:streaming` | Parsed data chunk during streaming | `{ stepId, data, timestamp }` |
+
+**Example - Complete Event Monitoring:**
+```javascript
+// Monitor all step progress
+wizard.on('step:start', (data) => {
+  console.log(`🚀 Starting step: ${data.stepId}`);
+});
+
+wizard.on('step:complete', (data) => {
+  console.log(`✅ Completed step: ${data.stepId} (${data.duration}ms)`);
+  console.log('Result:', data.data);
+});
+
+wizard.on('step:failed', (data) => {
+  console.error(`❌ Failed step: ${data.stepId}`, data.error);
+});
+
+// Monitor wizard completion
+wizard.on('wizard:stop', (data) => {
+  console.log(`🏁 Wizard finished (${data.reason})`);
+  console.log('Final state:', data.finalState);
+});
+```
+
+**Example - Real-time Streaming:**
+```javascript
+wizard.on('step:streaming', (data) => {
+  // Update UI with partial results
+  updateUI(data.stepId, data.data);
+});
+
+wizard.on('step:chunk', (data) => {
+  // Handle raw text streaming
+  appendToOutput(data.chunk);
+});
+```
+
+---
+
 ## API Reference
 
 ### Wizard Constructor
@@ -1001,9 +1086,10 @@ new Wizard(config: {
 
 | Method | Description |
 |--------|-------------|
-| `setContext(data)` | Initialize workflow context |
-| `getContext()` | Retrieve current context |
-| `updateContext(data)` | Update context (returns Wizard instance for chaining) |
+| `setState(data)` | Initialize workflow state |
+| `getState()` | Retrieve current state |
+| `setState(updates)` | Update state (supports object or functional updates) |
+| `getContext()` | Retrieve current state (legacy alias for getState) |
 
 ### Step Methods
 
@@ -1026,7 +1112,8 @@ Available in every `update` function:
 
 ```typescript
 {
-  updateContext: (updates: object) => void;
+  setState: (updates: object | function) => void;
+  updateContext: (updates: object) => void; // Legacy
   next: () => FlowControlSignal;
   goto: (stepId: string) => FlowControlSignal;
   retry: () => FlowControlSignal;

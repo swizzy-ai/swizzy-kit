@@ -20,7 +20,23 @@ export class VisualizationManager {
   private runResolver?: () => void;
   private pauseResolver?: () => void;
 
-  constructor(private wizard: any) {} // Wizard instance for callbacks
+  constructor(private wizard: any) {
+    // Listen for state update events
+    this.wizard.on('state:update', (data: any) => {
+      this.sendToClients({
+        type: 'state_update',
+        ...data
+      });
+    });
+
+    // Listen for wizard stop events
+    this.wizard.on('wizard:stop', (data: any) => {
+      this.sendToClients({
+        type: 'wizard_stop',
+        ...data
+      });
+    });
+  } // Wizard instance for callbacks
 
   private getStepsInfo() {
     return this.wizard.steps.map((item: any) => {
@@ -193,6 +209,12 @@ export class VisualizationManager {
             this.wizard.isPaused = false;
             this.wizard.isStepMode = false;
             this.sendToClients({ type: 'status_update', status: { isRunning: false, isPaused: false, isStepMode: false } });
+            // Emit wizard:stop event for manual stops
+            this.wizard.events.emit('wizard:stop', {
+              reason: 'manual_stop',
+              finalState: this.wizard.stateManager.getState(),
+              timestamp: Date.now()
+            });
             break;
 
           case 'replay':

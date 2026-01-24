@@ -11,7 +11,7 @@ import { SchemaUtils } from './schema-utils';
 import { BungeeExecutor } from './bungee/executor';
 import { Logger } from './logger';
 import { UsageTracker } from './usage-tracker';
-import { ContextManager } from './context-manager';
+import { StateManager } from './state-manager';
 
 // Simple EventEmitter for wizard events
 class EventEmitter {
@@ -88,7 +88,7 @@ export class Wizard {
   // Managers
   private logger: Logger;
   private usageTracker: UsageTracker;
-  private contextManager: ContextManager;
+  private stateManager: StateManager;
   private visualizationManager: VisualizationManager;
   private bungeeExecutor: BungeeExecutor;
   private events: EventEmitter;
@@ -102,16 +102,16 @@ export class Wizard {
   }
 
   private debouncedSendContextUpdate = this.debounce(() => {
-    this.visualizationManager.sendContextUpdate(this.contextManager.getContext());
+    this.visualizationManager.sendContextUpdate(this.stateManager.getContext());
   }, 100);
 
   // Getters for manager methods
   private get workflowContext(): ContextData {
-    return this.contextManager.getContext();
+    return this.stateManager.getContext();
   }
 
   private set workflowContext(value: ContextData) {
-    this.contextManager.setWorkflowContext(value);
+    this.stateManager.setWorkflowContext(value);
   }
 
   private get log(): (message: string | (() => string)) => void {
@@ -138,13 +138,13 @@ export class Wizard {
 
     // Initialize managers
     this.logger = new Logger(this.id);
-    this.contextManager = new ContextManager();
+    this.events = new EventEmitter();
+    this.stateManager = new StateManager(this.events);
     this.visualizationManager = new VisualizationManager(this);
     this.usageTracker = new UsageTracker(config.onUsage, (totalTokens, rate) => {
       this.visualizationManager.sendTokenUpdate(totalTokens, rate);
     });
     this.bungeeExecutor = new BungeeExecutor(this);
-    this.events = new EventEmitter();
   }
 
 
@@ -199,10 +199,12 @@ export class Wizard {
   }
 
   private clearStepError(stepId: string): void {
-    const context = this.contextManager.getContext();
-    delete context[`${stepId}_error`];
-    delete context[`${stepId}_retryCount`];
-    this.contextManager.setWorkflowContext(context);
+    this.stateManager.setState((prevState: any) => {
+      const newState = { ...prevState };
+      delete newState[`${stepId}_error`];
+      delete newState[`${stepId}_retryCount`];
+      return newState;
+    });
   }
 
   private isStringSignal(signal: FlowControlSignal): signal is string {
@@ -361,13 +363,21 @@ export class Wizard {
       totalSteps: this.steps.length,
       timestamp: endTime
     });
+
+    // Emit wizard:stop event
+    this.events.emit('wizard:stop', {
+      reason: 'completed',
+      finalState: this.stateManager.getState(),
+      timestamp: endTime
+    });
   }
 
 
 
-  private createBaseActions(): Pick<WizardActions, 'updateContext' | 'llmClient' | 'goto' | 'next' | 'stop' | 'retry' | 'wait'> {
+  private createBaseActions(): Pick<WizardActions, 'updateContext' | 'setState' | 'llmClient' | 'goto' | 'next' | 'stop' | 'retry' | 'wait'> {
     return {
       updateContext: (updates: ContextData) => this.updateContext(updates),
+      setState: (updates: any) => this.stateManager.setState(updates),
       llmClient: this.llmClient,
       goto: (stepId: string) => this.goto(stepId),
       next: () => this.next(),
@@ -380,6 +390,7 @@ export class Wizard {
   private createWizardActions(anchorStepId: string = ''): WizardActions {
     return {
       ...this.createBaseActions(),
+      setState: (updates: any) => this.stateManager.setState(updates),
       bungee: {
         init: () => new BungeeBuilder(anchorStepId)
       }
@@ -389,6 +400,9 @@ export class Wizard {
   private createWorkerActions(telescope: Record<string, any>): WizardActions {
     return {
       updateContext: (updates: ContextData) => {
+        this.bungeeExecutor.mergeWorkerResults(updates, telescope);
+      },
+      setState: (updates: any) => {
         this.bungeeExecutor.mergeWorkerResults(updates, telescope);
       },
       llmClient: this.llmClient,
@@ -438,7 +452,7 @@ export class Wizard {
       timestamp: stepStartTime
     });
 
-    const stepContext = await step.getContext(this.contextManager.getContext());
+    const stepContext = await step.getContext(this.stateManager.getContext());
     let processedInstruction = step.instruction;
     if (step.contextType === 'template' || step.contextType === 'both') {
       processedInstruction = this.applyTemplate(step.instruction, stepContext);
